@@ -23,5 +23,13 @@
     <None Include="dgs_chill.def">
       <Filter>Source Files</Filter>
     </None>
+    <None Include="dgs.ini">
+      <Filter>Source Files</Filter>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="INIReader.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

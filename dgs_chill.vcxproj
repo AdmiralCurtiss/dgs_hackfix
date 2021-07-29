@@ -166,7 +166,11 @@
     <ClCompile Include="dllmain.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="dgs.ini" />
     <None Include="dgs_chill.def" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="INIReader.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
