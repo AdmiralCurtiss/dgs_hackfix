@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 //#include <dinput.h>
+#include <shellscalingapi.h>
 
 #include <cstdio>
 
@@ -217,6 +218,21 @@ static void* SetupHacks() {
 	if (ini.ParseError() != 0)
 		return nullptr;
 
+	if (ini.GetBoolean("Main", "ReportAsHighDpiAware", true)) {
+		SetProcessDpiAwareness(PROCESS_SYSTEM_DPI_AWARE);
+	}
+
+	// run at 60 fps or whatever
+	float fps = ini.GetFloat("Main", "AnimationFps", 60.0f);
+	if (fps != 30.0f) {
+		//WriteFloat(reinterpret_cast<void*>(0x140058219), fps); // 3d model animation speed?
+		WriteFloat(reinterpret_cast<void*>(0x140058227), fps); // 3d render update speed
+	}
+
+	if (ini.GetBoolean("Main", "DisplayAllRenderResolutions", true)) {
+		WriteByte(reinterpret_cast<void*>(0x14005e2a6), 0xeb); // jz -> jmp
+	}
+
 	// allocate extra page for code
 	void* new_page = VirtualAlloc(nullptr, 0x1000, MEM_COMMIT, PAGE_READWRITE);
 	if (!new_page)
@@ -231,18 +247,6 @@ static void* SetupHacks() {
 		int ms = ini.GetInteger("Main", "AudioDeviceCountCheckThreadSleepTime", 1000);
 		free_space_ptr = InjectSleepInAudioDeviceCountCheckThread(free_space_ptr, ms);
 	}
-
-	// run at 60 fps or whatever
-	float fps = ini.GetFloat("Main", "AnimationFps", 60.0f);
-	if (fps != 30.0f) {
-		//WriteFloat(reinterpret_cast<void*>(0x140058219), fps); // 3d model animation speed?
-		WriteFloat(reinterpret_cast<void*>(0x140058227), fps); // 3d render update speed
-	}
-
-	if (ini.GetBoolean("Main", "DisplayAllRenderResolutions", true)) {
-		WriteByte(reinterpret_cast<void*>(0x14005e2a6), 0xeb); // jz -> jmp
-	}
-
 
 	// mark newly allocated page as executable
 	{
