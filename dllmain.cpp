@@ -26,6 +26,15 @@ static void WriteByte(void* addr, char value) {
 	VirtualProtect(fps_addr, 0x1000, fps_attr, &tmpdword);
 }
 
+static char* Align16CodePage(void* new_page) {
+	char* p = reinterpret_cast<char*>(new_page);
+	*p++ = 0xcc;
+	while ((reinterpret_cast<unsigned long long>(p) & 0xf) != 0) {
+		*p++ = 0xcc;
+	}
+	return p;
+}
+
 static void* InjectSleepInMainThread(void* new_page, int MainThreadSleepTime) {
 	DWORD tmpdword;
 
@@ -212,6 +221,89 @@ static void* InjectSleepInAudioDeviceCountCheckThread(void* new_page, int sleepT
 	return rv;
 }
 
+static void* InjectInvestigationCursorSpeedAdjust(void* new_page, float factor) {
+	DWORD tmpdword;
+
+	// remove write protection of relevant page
+	void* message_pump_loop_page_addr = reinterpret_cast<char*>(0x1401d1000);
+	DWORD message_pump_loop_page_old_attr;
+	VirtualProtect(message_pump_loop_page_addr, 0x1000, PAGE_READWRITE, &message_pump_loop_page_old_attr);
+
+	void* rv = new_page;
+
+	// modify code
+	{
+		char* overwrite_addr = reinterpret_cast<char*>(0x1401d112f);
+		constexpr unsigned int replace_size = 0xc;
+		char overwrite_bytes[replace_size];
+		char expected_bytes[replace_size] = { 0x48, 0x8b, 0x8b, 0xe8, 0x02, 0x00, 0x00, 0xf3, 0x45, 0x0f, 0x59, 0xc4 };
+		memcpy(overwrite_bytes, overwrite_addr, replace_size);
+		if (memcmp(overwrite_bytes, expected_bytes, replace_size) == 0) {
+			// rax, rcx, xmm6, xmm7 are free to use
+
+			// we appear to have found the correct bytes
+			char* writeptr = reinterpret_cast<char*>(new_page);
+			char* factor_literal_ptr = writeptr;
+			memcpy(writeptr, &factor, 4);
+			writeptr += 4;
+			writeptr = Align16CodePage(writeptr);
+
+
+			char* code_start = writeptr;
+
+			// multiply xmm12 with given factor
+			// movss xmm7,factor
+			char* factor_load_relative_to = writeptr + 8;
+			int factor_load_diff = factor_literal_ptr - factor_load_relative_to;
+			*writeptr++ = 0xf3;
+			*writeptr++ = 0x0f;
+			*writeptr++ = 0x10;
+			*writeptr++ = 0x3d;
+			memcpy(writeptr, &factor_load_diff, 4);
+			writeptr += 4;
+			// mulss xmm12,xmm7
+			*writeptr++ = 0xf3;
+			*writeptr++ = 0x44;
+			*writeptr++ = 0x0f;
+			*writeptr++ = 0x59;
+			*writeptr++ = 0xe7;
+
+			// replace code we overwrote
+			memcpy(writeptr, overwrite_bytes, replace_size);
+			writeptr += replace_size;
+
+			// jump back
+			// mov rax,overwrite_end
+			*writeptr++ = 0x48;
+			*writeptr++ = 0xb8;
+			char* overwrite_end = overwrite_addr + replace_size;
+			memcpy(writeptr, &overwrite_end, 8);
+			writeptr += 8;
+			// jmp rax
+			*writeptr++ = 0xff;
+			*writeptr++ = 0xe0;
+
+			rv = writeptr;
+
+			// inject jump to our new code
+			// mov rcx,code_start
+			writeptr = overwrite_addr;
+			*writeptr++ = 0x48;
+			*writeptr++ = 0xb9;
+			memcpy(writeptr, &code_start, 8);
+			writeptr += 8;
+			// jmp rcx
+			*writeptr++ = 0xff;
+			*writeptr++ = 0xe1;
+		}
+	}
+
+	// reset write protection of relevant page
+	VirtualProtect(message_pump_loop_page_addr, 0x1000, message_pump_loop_page_old_attr, &tmpdword);
+
+	return rv;
+}
+
 static void* SetupHacks() {
 	INIReader ini("dgs.ini");
 
@@ -242,10 +334,20 @@ static void* SetupHacks() {
 	if (ini.GetBoolean("Main", "InjectSleepInMainThread", true)) {
 		int ms = ini.GetInteger("Main", "MainThreadSleepTime", 10);
 		free_space_ptr = InjectSleepInMainThread(free_space_ptr, ms);
+		free_space_ptr = Align16CodePage(free_space_ptr);
 	}
 	if (ini.GetBoolean("Main", "InjectSleepInAudioDeviceCountCheckThread", true)) {
 		int ms = ini.GetInteger("Main", "AudioDeviceCountCheckThreadSleepTime", 1000);
 		free_space_ptr = InjectSleepInAudioDeviceCountCheckThread(free_space_ptr, ms);
+		free_space_ptr = Align16CodePage(free_space_ptr);
+	}
+
+	// adjust cursor so it moves at correct speed (or faster/slower depending on user config)
+	float rawCursorMoveSpeed = ini.GetFloat("Main", "InvestigationCursorMoveSpeed", 1.0f);
+	float adjustedCursorMoveSpeed = rawCursorMoveSpeed / (fps / 30.0f);
+	if (adjustedCursorMoveSpeed != 1.0f) {
+		free_space_ptr = InjectInvestigationCursorSpeedAdjust(free_space_ptr, adjustedCursorMoveSpeed);
+		free_space_ptr = Align16CodePage(free_space_ptr);
 	}
 
 	// mark newly allocated page as executable
