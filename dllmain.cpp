@@ -8,6 +8,8 @@
 
 #include "INIReader.h"
 
+using PSetProcessDpiAwareness = long(__stdcall*)(int value);
+
 static void WriteFloat(void* addr, float value) {
 	void* fps_addr = reinterpret_cast<void*>(reinterpret_cast<unsigned long long>(addr) & 0xffff'ffff'ffff'f000);
 	DWORD fps_attr;
@@ -341,6 +343,18 @@ static void FixJuryPitCrash() {
 	VirtualProtect(page_addr, 0x1000, page_old_attr, &tmpdword);
 }
 
+static void SetHighDpiAware() {
+	HMODULE dll = ::LoadLibraryW(L"api-ms-win-shcore-scaling-l1-1-1.dll");
+	if (!dll)
+		return;
+	void* addr = ::GetProcAddress(dll, "SetProcessDpiAwareness");
+	if (addr) {
+		PSetProcessDpiAwareness func = static_cast<PSetProcessDpiAwareness>(addr);
+		func(1);
+	}
+	::FreeLibrary(dll);
+}
+
 static void* SetupHacks() {
 	INIReader ini("dgs.ini");
 
@@ -350,7 +364,7 @@ static void* SetupHacks() {
 		return nullptr;
 
 	if (ini.GetBoolean("Main", "ReportAsHighDpiAware", true)) {
-		SetProcessDpiAwareness(PROCESS_SYSTEM_DPI_AWARE);
+		SetHighDpiAware();
 	}
 
 	// run at 60 fps or whatever
