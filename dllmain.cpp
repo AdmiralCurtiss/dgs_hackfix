@@ -358,10 +358,12 @@ static void SetHighDpiAware() {
 static void* SetupHacks() {
 	INIReader ini("dgs.ini");
 
-	FixJuryPitCrash();
-
 	if (ini.ParseError() != 0)
 		return nullptr;
+
+	if (ini.GetBoolean("Main", "InjectNullCheckForJuryPit", true)) {
+		FixJuryPitCrash();
+	}
 
 	if (ini.GetBoolean("Main", "ReportAsHighDpiAware", true)) {
 		SetHighDpiAware();
