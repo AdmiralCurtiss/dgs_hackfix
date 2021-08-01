@@ -18,6 +18,9 @@
     <ClCompile Include="dllmain.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="crc32.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="dgs_chill.def">
@@ -29,6 +32,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="INIReader.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="crc32.h">
       <Filter>Source Files</Filter>
     </ClInclude>
   </ItemGroup>
