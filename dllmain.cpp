@@ -304,8 +304,47 @@ static void* InjectInvestigationCursorSpeedAdjust(void* new_page, float factor) 
 	return rv;
 }
 
+static void FixJuryPitCrash() {
+	DWORD tmpdword;
+
+	// remove write protection of relevant page
+	void* page_addr = reinterpret_cast<char*>(0x1405c2000);
+	DWORD page_old_attr;
+	VirtualProtect(page_addr, 0x1000, PAGE_READWRITE, &page_old_attr);
+
+	// setup code in the between-function padding, barely enough space there...
+	char* code_start_addr = reinterpret_cast<char*>(0x1405c2036);
+	char* target_start_addr = reinterpret_cast<char*>(0x1405c2076);
+	char* writeptr = reinterpret_cast<char*>(target_start_addr);
+	memcpy(writeptr, code_start_addr, 3);
+	writeptr += 3;
+
+	// inject a nullptr test and skip the function if null
+	// test rcx,rcx
+	*writeptr++ = 0x48;
+	*writeptr++ = 0x85;
+	*writeptr++ = 0xc9;
+	// jz exit_function
+	*writeptr++ = 0x74;
+	*writeptr++ = 0xf2;
+	// jmp continue_function
+	*writeptr++ = 0xeb;
+	*writeptr++ = 0xb9;
+
+	// inject jmp into the function padding
+	writeptr = code_start_addr;
+	*writeptr++ = 0xeb;
+	*writeptr++ = 0x3e;
+	*writeptr++ = 0x90;
+
+	// reset write protection of relevant page
+	VirtualProtect(page_addr, 0x1000, page_old_attr, &tmpdword);
+}
+
 static void* SetupHacks() {
 	INIReader ini("dgs.ini");
+
+	FixJuryPitCrash();
 
 	if (ini.ParseError() != 0)
 		return nullptr;
