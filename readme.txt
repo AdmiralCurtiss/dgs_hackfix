@@ -4,6 +4,7 @@ Hackfix for a few issues in the PC port:
 - Resolution can now be set to arbitrary resolutions reported by your GPU/Monitor.
 - CPU usage on some threads is now no longer unnecessarily high.
 - Reports process as High-DPI aware so it doesn't get scaled by Windows.
+- Attempt at fixing the crash some people experience when interacting with the Jury.
 
 All options are can be enabled/disabled or configured in dgs.ini.
 
