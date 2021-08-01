@@ -2,7 +2,7 @@
 
 #include <Windows.h>
 //#include <dinput.h>
-#include <shellscalingapi.h>
+#include <WinUser.h>
 
 #include <cstdio>
 
@@ -343,18 +343,6 @@ static void FixJuryPitCrash() {
 	VirtualProtect(page_addr, 0x1000, page_old_attr, &tmpdword);
 }
 
-static void SetHighDpiAware() {
-	HMODULE dll = ::LoadLibraryW(L"api-ms-win-shcore-scaling-l1-1-1.dll");
-	if (!dll)
-		return;
-	void* addr = ::GetProcAddress(dll, "SetProcessDpiAwareness");
-	if (addr) {
-		PSetProcessDpiAwareness func = static_cast<PSetProcessDpiAwareness>(addr);
-		func(1);
-	}
-	::FreeLibrary(dll);
-}
-
 static void* SetupHacks() {
 	INIReader ini("dgs.ini");
 
@@ -366,7 +354,7 @@ static void* SetupHacks() {
 	}
 
 	if (ini.GetBoolean("Main", "ReportAsHighDpiAware", true)) {
-		SetHighDpiAware();
+		SetProcessDPIAware();
 	}
 
 	// run at 60 fps or whatever
