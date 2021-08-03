@@ -477,7 +477,8 @@ static void* InjectInvestigationCursorSpeedAdjust(GameVersion version, Logger& l
 static void InjectInvestigationCameraSpeedAdjust(GameVersion version, Logger& logger, float factor,
                                                  void* codeBase) {
     constexpr int offset_english_v1 = 0x1E56E0;
-    constexpr int offset_japanese_v1 = 0;
+    // educated guess based on cursor move speed address...
+    constexpr int offset_japanese_v1 = offset_english_v1 + 0xAB0;
     int offset = SelectOffset(version, offset_english_v1, offset_japanese_v1);
     if (offset == 0) {
         logger.Log("No known address, skipping camera patch...\n");
@@ -493,7 +494,7 @@ static void InjectInvestigationCameraSpeedAdjust(GameVersion version, Logger& lo
     // just some close function padding bytes...
     int valueOffsets[count] = {0x738, 0x73c, -0x4, -0x2F4, -0x2F8, -0xE04, -0xE08, -0xE0C};
 
-    // verify the function padding bytes
+    // verify stuff since we're guessing the JP, wouldn't want to write garbage...
     bool bad = false;
     for (int i = 0; i < count; ++i) {
         unsigned int tmp;
@@ -504,6 +505,16 @@ static void InjectInvestigationCameraSpeedAdjust(GameVersion version, Logger& lo
             bad = true;
         } else {
             logger.Log("Valid padding bytes at offset ").LogPtr(addr).Log(".\n");
+        }
+
+        char* addr_instr = function_addr + addressOffsets[i];
+        memcpy(&tmp, addr_instr, 4);
+        if (tmp != 0x35580ff3) {
+            logger.Log("Bad instruction at offset ").LogPtr(addr_instr);
+            logger.Log(" (").LogHex(tmp).Log(").\n");
+            bad = true;
+        } else {
+            logger.Log("Valid instruction at offset ").LogPtr(addr_instr).Log(".\n");
         }
     }
     if (bad) {
