@@ -46,10 +46,10 @@ struct Logger {
         return *this;
     }
 
-    Logger& LogInt(unsigned long long v) {
+    Logger& LogInt(int v) {
         if (f) {
             char buffer[32];
-            int len = sprintf(buffer, "%llu", v);
+            int len = sprintf(buffer, "%d", v);
             fwrite(buffer, len, 1, f);
             fflush(f);
         }
@@ -98,6 +98,7 @@ struct PageUnprotect {
     ~PageUnprotect() {
         DWORD tmp;
         Log.Log("Reprotecting ").LogHex(Length).Log(" bytes at ").LogPtr(Address);
+        Log.Log(" to attributes ").LogHex(Attributes);
         if (VirtualProtect(Address, Length, Attributes, &tmp)) {
             Log.Log(" -> Success.\n");
         } else {
@@ -143,6 +144,12 @@ static PDirectInput8Create LoadForwarderAddress(Logger& logger) {
 
 static void WriteFloat(Logger& logger, void* addr, float value) {
     logger.Log("Writing float ").LogFloat(value).Log(" to ").LogPtr(addr).Log(".\n");
+    PageUnprotect unprotect(logger, addr, 4);
+    memcpy(addr, &value, 4);
+}
+
+static void WriteInt(Logger& logger, void* addr, int value) {
+    logger.Log("Writing int ").LogInt(value).Log(" to ").LogPtr(addr).Log(".\n");
     PageUnprotect unprotect(logger, addr, 4);
     memcpy(addr, &value, 4);
 }
@@ -467,6 +474,58 @@ static void* InjectInvestigationCursorSpeedAdjust(GameVersion version, Logger& l
     return rv;
 }
 
+static void InjectInvestigationCameraSpeedAdjust(GameVersion version, Logger& logger, float factor,
+                                                 void* codeBase) {
+    constexpr int offset_english_v1 = 0x1E56E0;
+    constexpr int offset_japanese_v1 = 0;
+    int offset = SelectOffset(version, offset_english_v1, offset_japanese_v1);
+    if (offset == 0) {
+        logger.Log("No known address, skipping camera patch...\n");
+    }
+
+    char* function_addr = reinterpret_cast<char*>(codeBase) + offset;
+
+    // all of these are addss xmm6,dword ptr[something], we'll just replace the relevant value with
+    // a scaled one
+    constexpr int count = 8;
+    int addressOffsets[count] = {0x86, 0xA7, 0xE2, 0xEC, 0x147, 0x156, 0x17F, 0x189};
+
+    // just some close function padding bytes...
+    int valueOffsets[count] = {0x738, 0x73c, -0x4, -0x2F4, -0x2F8, -0xE04, -0xE08, -0xE0C};
+
+    // verify the function padding bytes
+    bool bad = false;
+    for (int i = 0; i < count; ++i) {
+        unsigned int tmp;
+        char* addr = function_addr + valueOffsets[i];
+        memcpy(&tmp, addr, 4);
+        if (tmp != 0xccccccccu) {
+            logger.Log("Bad padding bytes at offset ").LogPtr(addr).Log(".\n");
+            bad = true;
+        } else {
+            logger.Log("Valid padding bytes at offset ").LogPtr(addr).Log(".\n");
+        }
+    }
+    if (bad) {
+        logger.Log("Found bad padding bytes, cancelling camera patch.\n");
+        return;
+    }
+
+    // scale and replace values
+    for (int i = 0; i < count; ++i) {
+        int oldLiteralOffset;
+        char* offsetAddress = function_addr + addressOffsets[i] + 4;
+        memcpy(&oldLiteralOffset, offsetAddress, 4);
+        char* oldLiteralAddress = (function_addr + addressOffsets[i] + 8) + oldLiteralOffset;
+        float oldLiteral;
+        memcpy(&oldLiteral, oldLiteralAddress, 4);
+        float newLiteral = oldLiteral * factor;
+        char* newLiteralAddress = function_addr + valueOffsets[i];
+        WriteFloat(logger, newLiteralAddress, newLiteral);
+        WriteInt(logger, offsetAddress, static_cast<int>(newLiteralAddress - (offsetAddress + 4)));
+    }
+}
+
 static void FixJuryPitCrash(GameVersion version, Logger& logger, void* codeBase) {
     constexpr int offset_english_v1 = 0x5C1036;
     constexpr int offset_japanese_v1 = 0x5C1A76;
@@ -590,6 +649,15 @@ static void* SetupHacks() {
         free_space_ptr = InjectInvestigationCursorSpeedAdjust(version, logger, free_space_ptr,
                                                               adjustedCursorMoveSpeed, codeBase);
         free_space_ptr = Align16CodePage(logger, free_space_ptr);
+    }
+
+    // adjust camera so it moves at correct speed (or faster/slower depending on user config)
+    // this is specifically the back-and-forth scroll during some deductions
+    float rawCameraMoveSpeed = ini.GetFloat("Main", "InvestigationCameraMoveSpeed", 1.0f);
+    float adjustedCameraMoveSpeed = rawCameraMoveSpeed / (fps / 30.0f);
+    if (adjustedCameraMoveSpeed != 1.0f) {
+        logger.Log("Applying InvestigationCameraMoveSpeed...\n");
+        InjectInvestigationCameraSpeedAdjust(version, logger, adjustedCameraMoveSpeed, codeBase);
     }
 
     // mark newly allocated page as executable

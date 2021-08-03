@@ -53,6 +53,8 @@ https://github.com/benhoyt/inih
 #ifndef __INI_H__
 #define __INI_H__
 
+#include <locale.h>
+
 /* Make this header file easier to include in C++ code */
 #ifdef __cplusplus
 extern "C" {
@@ -349,9 +351,6 @@ inline int ini_parse(const char* filename, ini_handler handler, void* user)
 class INIReader
 {
 public:
-    // Empty Constructor
-    INIReader() {};
-
     // Construct INIReader and parse given filename. See ini.h for more info
     // about the parsing.
     INIReader(std::string filename);
@@ -359,6 +358,8 @@ public:
     // Construct INIReader and parse given file. See ini.h for more info
     // about the parsing.
     INIReader(FILE* file);
+
+    ~INIReader();
 
     // Return the result of ini_parse(), i.e., 0 on success, line number of
     // first error on parse error, or -1 on file open error.
@@ -394,6 +395,7 @@ protected:
     int _error;
     std::map<std::string, std::string> _values;
     std::set<std::string> _sections;
+    _locale_t Locale;
     static std::string MakeKey(std::string section, std::string name);
     static int ValueHandler(void* user, const char* section, const char* name,
         const char* value);
@@ -412,11 +414,18 @@ protected:
 inline INIReader::INIReader(std::string filename)
 {
     _error = ini_parse(filename.c_str(), ValueHandler, this);
+    Locale = _create_locale(LC_ALL, "C");
 }
 
 inline INIReader::INIReader(FILE* file)
 {
     _error = ini_parse_file(file, ValueHandler, this);
+    Locale = _create_locale(LC_ALL, "C");
+}
+
+inline INIReader::~INIReader()
+{
+    _free_locale(Locale);
 }
 
 inline int INIReader::ParseError() const
@@ -441,7 +450,7 @@ inline long INIReader::GetInteger(std::string section, std::string name, long de
     const char* value = valstr.c_str();
     char* end;
     // This parses "1234" (decimal) and also "0x4D2" (hex)
-    long n = strtol(value, &end, 0);
+    long n = _strtol_l(value, &end, 0, Locale);
     return end > value ? n : default_value;
 }
 
@@ -450,7 +459,7 @@ inline double INIReader::GetReal(std::string section, std::string name, double d
     std::string valstr = Get(section, name, "");
     const char* value = valstr.c_str();
     char* end;
-    double n = strtod(value, &end);
+    double n = _strtod_l(value, &end, Locale);
     return end > value ? n : default_value;
 }
 
@@ -459,7 +468,7 @@ inline float INIReader::GetFloat(std::string section, std::string name, float de
     std::string valstr = Get(section, name, "");
     const char* value = valstr.c_str();
     char* end;
-    float n = strtof(value, &end);
+    float n = _strtof_l(value, &end, Locale);
     return end > value ? n : default_value;
 }
 
