@@ -195,7 +195,7 @@ static GameVersion FindImageBase(Logger& logger, void** code, void** rdata) {
                     logger.Log("Appears to be the WW version.\n");
                     *code = info.BaseAddress;
                     gameVersion = GameVersion::English_v1;
-                } else if (info.RegionSize == 0x954000) {
+                } else if (info.RegionSize == 0x954000 && crc == 0xa0e848af) {
                     logger.Log("Appears to be the JP version.\n");
                     *code = info.BaseAddress;
                     gameVersion = GameVersion::Japanese_v1;
