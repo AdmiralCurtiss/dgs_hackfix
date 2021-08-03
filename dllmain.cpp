@@ -9,6 +9,12 @@
 #include "crc32.h"
 
 namespace {
+enum class GameVersion {
+    Unknown,
+    English_v1,
+    Japanese_v1,
+};
+
 struct Logger {
     FILE* f;
 
@@ -101,6 +107,14 @@ struct PageUnprotect {
 };
 } // namespace
 
+static int SelectOffset(GameVersion version, int en, int jp) {
+    switch (version) {
+        case GameVersion::English_v1: return en;
+        case GameVersion::Japanese_v1: return jp;
+        default: return 0;
+    }
+}
+
 using PDirectInput8Create = HRESULT (*)(HINSTANCE hinst, DWORD dwVersion, REFIID riidltf,
                                         LPVOID* ppvOut, void* punkOuter);
 static PDirectInput8Create LoadForwarderAddress(Logger& logger) {
@@ -149,7 +163,8 @@ static char* Align16CodePage(Logger& logger, void* new_page) {
     return p;
 }
 
-static void FindImageBase(Logger& logger, void** code, void** rdata) {
+static GameVersion FindImageBase(Logger& logger, void** code, void** rdata) {
+    GameVersion gameVersion = GameVersion::Unknown;
     MEMORY_BASIC_INFORMATION info;
     memset(&info, 0, sizeof(info));
     *code = nullptr;
@@ -169,21 +184,26 @@ static void FindImageBase(Logger& logger, void** code, void** rdata) {
                 .Log(", protection ")
                 .LogHex(info.Protect)
                 .Log(".\n");
-            if (info.RegionSize == 0x953000 && info.Protect == PAGE_EXECUTE_READ) {
+            if ((*code == 0) && (info.RegionSize == 0x953000 || info.RegionSize == 0x954000)
+                && info.Protect == PAGE_EXECUTE_READ) {
                 // could be code section, verify checksum
                 crc_t crc = crc_init();
                 crc = crc_update(crc, info.BaseAddress, info.RegionSize);
                 crc = crc_finalize(crc);
-                if (crc == 0x21dbbfc0) {
-                    logger.Log("Matches checksum, assuming ")
-                        .LogPtr(info.BaseAddress)
-                        .Log(" as code section.\n");
+                logger.Log("Checksum is ").LogHex(crc).Log(".\n");
+                if (info.RegionSize == 0x953000 && crc == 0x21dbbfc0) {
+                    logger.Log("Appears to be the WW version.\n");
                     *code = info.BaseAddress;
+                    gameVersion = GameVersion::English_v1;
+                } else if (info.RegionSize == 0x954000) {
+                    logger.Log("Appears to be the JP version.\n");
+                    *code = info.BaseAddress;
+                    gameVersion = GameVersion::Japanese_v1;
                 } else {
-                    logger.Log("Mismatches checksum (").LogHex(crc).Log(")\n");
+                    logger.Log("Could not identify code section.\n");
                 }
             }
-            if (info.RegionSize == 0x160000 && info.Protect == PAGE_READONLY) {
+            if ((*rdata == 0) && info.RegionSize == 0x160000 && info.Protect == PAGE_READONLY) {
                 // likely rdata section, can't really test this as the addresses have already been
                 // fixed up, so just assume it's right...
                 logger.Log("Assuming ").LogPtr(info.BaseAddress).Log(" as rdata section.\n");
@@ -197,84 +217,187 @@ static void FindImageBase(Logger& logger, void** code, void** rdata) {
             // logger.Log("\n");
         }
     }
+
+    return gameVersion;
 }
 
-static void* InjectSleepInMainThread(Logger& logger, void* new_page, int MainThreadSleepTime,
-                                     void* codeBase, void* sleepFuncAddr) {
-    char* overwrite_addr = reinterpret_cast<char*>(codeBase) + 0x3BE070;
+static void* InjectSleepInMainThread(GameVersion version, Logger& logger, void* new_page,
+                                     int MainThreadSleepTime, void* codeBase, void* sleepFuncAddr) {
+    constexpr int offset_english_v1 = 0x3BE070;
+    constexpr int offset_japanese_v1 = 0x3BEB10;
+    int offset = SelectOffset(version, offset_english_v1, offset_japanese_v1);
+    char* overwrite_addr = reinterpret_cast<char*>(codeBase) + offset;
     constexpr unsigned int replace_size = 0x13;
     PageUnprotect unprotect(logger, overwrite_addr, replace_size);
 
     void* rv = new_page;
 
-    // modify code
     char overwrite_bytes[replace_size];
-    char expected_bytes[replace_size] = {0x45, 0x33, 0xC9, 0xC7, 0x44, 0x24, 0x20, 0x01, 0x00, 0x00,
-                                         0x00, 0x45, 0x33, 0xC0, 0x48, 0x8D, 0x4C, 0x24, 0x30};
     memcpy(overwrite_bytes, overwrite_addr, replace_size);
-    if (memcmp(overwrite_bytes, expected_bytes, replace_size) == 0) {
-        // rdx is free to use
 
-        // we appear to have found the correct bytes
-        char* writeptr = reinterpret_cast<char*>(new_page);
+    // rdx is free to use
 
-        // inject a call to Sleep() so this thread is not constantly busy
-        // this isn't a good fix but it'll do for now...
-        char* sleep_addr = reinterpret_cast<char*>(sleepFuncAddr);
-        // mov rdx,sleep_addr
-        *writeptr++ = 0x48;
-        *writeptr++ = 0xba;
-        memcpy(writeptr, &sleep_addr, 8);
-        writeptr += 8;
-        // mov rdx,qword ptr[rdx]
-        *writeptr++ = 0x48;
-        *writeptr++ = 0x8b;
-        *writeptr++ = 0x12;
-        // mov ecx,MainThreadSleepTime
-        *writeptr++ = 0xb9;
-        memcpy(writeptr, &MainThreadSleepTime, 4);
-        writeptr += 4;
-        // call rdx
-        *writeptr++ = 0xff;
-        *writeptr++ = 0xd2;
+    // we appear to have found the correct bytes
+    char* writeptr = reinterpret_cast<char*>(new_page);
 
-        // place the data we just replaced at the new page
-        memcpy(writeptr, overwrite_bytes, replace_size);
-        writeptr += replace_size;
+    // inject a call to Sleep() so this thread is not constantly busy
+    // this isn't a good fix but it'll do for now...
+    char* sleep_addr = reinterpret_cast<char*>(sleepFuncAddr);
+    // mov rdx,sleep_addr
+    *writeptr++ = 0x48;
+    *writeptr++ = 0xba;
+    memcpy(writeptr, &sleep_addr, 8);
+    writeptr += 8;
+    // mov rdx,qword ptr[rdx]
+    *writeptr++ = 0x48;
+    *writeptr++ = 0x8b;
+    *writeptr++ = 0x12;
+    // mov ecx,MainThreadSleepTime
+    *writeptr++ = 0xb9;
+    memcpy(writeptr, &MainThreadSleepTime, 4);
+    writeptr += 4;
+    // call rdx
+    *writeptr++ = 0xff;
+    *writeptr++ = 0xd2;
 
-        // jump back to original code
-        // mov rdx,overwrite_end
-        *writeptr++ = 0x48;
-        *writeptr++ = 0xba;
-        char* overwrite_end = overwrite_addr + replace_size;
-        memcpy(writeptr, &overwrite_end, 8);
-        writeptr += 8;
-        // jmp rdx
-        *writeptr++ = 0xff;
-        *writeptr++ = 0xe2;
+    // place the data we just replaced at the new page
+    memcpy(writeptr, overwrite_bytes, replace_size);
+    writeptr += replace_size;
 
-        rv = writeptr;
+    // jump back to original code
+    // mov rdx,overwrite_end
+    *writeptr++ = 0x48;
+    *writeptr++ = 0xba;
+    char* overwrite_end = overwrite_addr + replace_size;
+    memcpy(writeptr, &overwrite_end, 8);
+    writeptr += 8;
+    // jmp rdx
+    *writeptr++ = 0xff;
+    *writeptr++ = 0xe2;
 
-        // and finally, inject jump to our new page
-        // mov rdx,new_page
-        writeptr = overwrite_addr;
-        *writeptr++ = 0x48;
-        *writeptr++ = 0xba;
-        memcpy(writeptr, &new_page, 8);
-        writeptr += 8;
-        // jmp rdx
-        *writeptr++ = 0xff;
-        *writeptr++ = 0xe2;
-    } else {
-        logger.Log("Unexpected bytes found, not applying patch.\n");
-    }
+    rv = writeptr;
+
+    // and finally, inject jump to our new page
+    // mov rdx,new_page
+    writeptr = overwrite_addr;
+    *writeptr++ = 0x48;
+    *writeptr++ = 0xba;
+    memcpy(writeptr, &new_page, 8);
+    writeptr += 8;
+    // jmp rdx
+    *writeptr++ = 0xff;
+    *writeptr++ = 0xe2;
 
     return rv;
 }
 
-static void* InjectSleepInAudioDeviceCountCheckThread(Logger& logger, void* new_page, int sleepTime,
-                                                      void* codeBase, void* sleepFuncAddr) {
-    char* overwrite_addr = reinterpret_cast<char*>(codeBase) + 0x587EB6;
+static void* InjectSleepInAudioDeviceCountCheckThread(GameVersion version, Logger& logger,
+                                                      void* new_page, int sleepTime, void* codeBase,
+                                                      void* sleepFuncAddr) {
+    constexpr int offset_english_v1 = 0x587EB6;
+    constexpr int offset_japanese_v1 = 0x5888F6;
+    int offset = SelectOffset(version, offset_english_v1, offset_japanese_v1);
+    char* overwrite_addr = reinterpret_cast<char*>(codeBase) + offset;
+    constexpr unsigned int replace_size = 0xc;
+    PageUnprotect unprotect(logger, overwrite_addr, replace_size);
+
+    void* rv = new_page;
+
+    int relative_replaced_function_offset;
+    memcpy(&relative_replaced_function_offset, overwrite_addr + 4, 4);
+    char* absolute_replaced_function_address =
+        overwrite_addr + 8 + relative_replaced_function_offset;
+
+    char overwrite_bytes[replace_size];
+    memcpy(overwrite_bytes, overwrite_addr, replace_size);
+
+    // rax, rcx is free to use
+
+    // we appear to have found the correct bytes
+    char* writeptr = reinterpret_cast<char*>(new_page);
+
+    // inject a call to Sleep() so this thread is not constantly busy
+    // this isn't a good fix but it'll do for now...
+    char* sleep_addr = reinterpret_cast<char*>(sleepFuncAddr);
+    // mov rax,sleep_addr
+    *writeptr++ = 0x48;
+    *writeptr++ = 0xb8;
+    memcpy(writeptr, &sleep_addr, 8);
+    writeptr += 8;
+    // mov rax,qword ptr[rax]
+    *writeptr++ = 0x48;
+    *writeptr++ = 0x8b;
+    *writeptr++ = 0x00;
+    // mov ecx,sleepTime
+    *writeptr++ = 0xb9;
+    memcpy(writeptr, &sleepTime, 4);
+    writeptr += 4;
+    // call rax
+    *writeptr++ = 0xff;
+    *writeptr++ = 0xd0;
+
+    // replace code we overwrote with equivalent logic
+    // mov rcx,rbx
+    *writeptr++ = 0x48;
+    *writeptr++ = 0x8b;
+    *writeptr++ = 0xcb;
+    // mov rax,some_function
+    *writeptr++ = 0x48;
+    *writeptr++ = 0xb8;
+    memcpy(writeptr, &absolute_replaced_function_address, 8);
+    writeptr += 8;
+    // call rax
+    *writeptr++ = 0xff;
+    *writeptr++ = 0xd0;
+    // test al,al
+    *writeptr++ = 0x84;
+    *writeptr++ = 0xc0;
+    // jz continue_loop
+    *writeptr++ = 0x74;
+    *writeptr++ = 0x0c;
+    // mov rcx,exit_loop_addr
+    char* exit_loop_addr = overwrite_addr + 0xC;
+    *writeptr++ = 0x48;
+    *writeptr++ = 0xb9;
+    memcpy(writeptr, &exit_loop_addr, 8);
+    writeptr += 8;
+    // jmp rcx
+    *writeptr++ = 0xff;
+    *writeptr++ = 0xe1;
+    // continue_loop:
+    // mov rcx,continue_loop_addr
+    char* continue_loop_addr = overwrite_addr - 0x14;
+    *writeptr++ = 0x48;
+    *writeptr++ = 0xb9;
+    memcpy(writeptr, &continue_loop_addr, 8);
+    writeptr += 8;
+    // jmp rcx
+    *writeptr++ = 0xff;
+    *writeptr++ = 0xe1;
+
+
+    rv = writeptr;
+
+    // inject jump to our new code
+    // mov rcx,new_page
+    writeptr = overwrite_addr;
+    *writeptr++ = 0x48;
+    *writeptr++ = 0xb9;
+    memcpy(writeptr, &new_page, 8);
+    writeptr += 8;
+    // jmp rcx
+    *writeptr++ = 0xff;
+    *writeptr++ = 0xe1;
+
+    return rv;
+}
+
+static void* InjectInvestigationCursorSpeedAdjust(GameVersion version, Logger& logger,
+                                                  void* new_page, float factor, void* codeBase) {
+    constexpr int offset_english_v1 = 0x1D012F;
+    constexpr int offset_japanese_v1 = 0x1D0BDF;
+    int offset = SelectOffset(version, offset_english_v1, offset_japanese_v1);
+    char* overwrite_addr = reinterpret_cast<char*>(codeBase) + offset;
     constexpr unsigned int replace_size = 0xc;
     PageUnprotect unprotect(logger, overwrite_addr, replace_size);
 
@@ -282,175 +405,74 @@ static void* InjectSleepInAudioDeviceCountCheckThread(Logger& logger, void* new_
 
     // modify code
     char overwrite_bytes[replace_size];
-    char expected_bytes[replace_size] = {0x48, 0x8b, 0xcb, 0xe8, 0x02, 0xe2,
-                                         0xe2, 0xff, 0x84, 0xc0, 0x74, 0xe0};
     memcpy(overwrite_bytes, overwrite_addr, replace_size);
-    if (memcmp(overwrite_bytes, expected_bytes, replace_size) == 0) {
-        // rax, rcx is free to use
 
-        // we appear to have found the correct bytes
-        char* writeptr = reinterpret_cast<char*>(new_page);
+    // rax, rcx, xmm6, xmm7 are free to use
 
-        // inject a call to Sleep() so this thread is not constantly busy
-        // this isn't a good fix but it'll do for now...
-        char* sleep_addr = reinterpret_cast<char*>(sleepFuncAddr);
-        // mov rax,sleep_addr
-        *writeptr++ = 0x48;
-        *writeptr++ = 0xb8;
-        memcpy(writeptr, &sleep_addr, 8);
-        writeptr += 8;
-        // mov rax,qword ptr[rax]
-        *writeptr++ = 0x48;
-        *writeptr++ = 0x8b;
-        *writeptr++ = 0x00;
-        // mov ecx,sleepTime
-        *writeptr++ = 0xb9;
-        memcpy(writeptr, &sleepTime, 4);
-        writeptr += 4;
-        // call rax
-        *writeptr++ = 0xff;
-        *writeptr++ = 0xd0;
-
-        // replace code we overwrote with equivalent logic
-        // mov rcx,rbx
-        *writeptr++ = 0x48;
-        *writeptr++ = 0x8b;
-        *writeptr++ = 0xcb;
-        // mov rax,some_function
-        char* some_function = reinterpret_cast<char*>(codeBase) + 0x3B60C0;
-        *writeptr++ = 0x48;
-        *writeptr++ = 0xb8;
-        memcpy(writeptr, &some_function, 8);
-        writeptr += 8;
-        // call rax
-        *writeptr++ = 0xff;
-        *writeptr++ = 0xd0;
-        // test al,al
-        *writeptr++ = 0x84;
-        *writeptr++ = 0xc0;
-        // jz continue_loop
-        *writeptr++ = 0x74;
-        *writeptr++ = 0x0c;
-        // mov rcx,exit_loop_addr
-        char* exit_loop_addr = reinterpret_cast<char*>(codeBase) + 0x587EC2;
-        *writeptr++ = 0x48;
-        *writeptr++ = 0xb9;
-        memcpy(writeptr, &exit_loop_addr, 8);
-        writeptr += 8;
-        // jmp rcx
-        *writeptr++ = 0xff;
-        *writeptr++ = 0xe1;
-        // continue_loop:
-        // mov rcx,continue_loop_addr
-        char* continue_loop_addr = reinterpret_cast<char*>(codeBase) + 0x587EA2;
-        *writeptr++ = 0x48;
-        *writeptr++ = 0xb9;
-        memcpy(writeptr, &continue_loop_addr, 8);
-        writeptr += 8;
-        // jmp rcx
-        *writeptr++ = 0xff;
-        *writeptr++ = 0xe1;
+    // we appear to have found the correct bytes
+    char* writeptr = reinterpret_cast<char*>(new_page);
+    char* factor_literal_ptr = writeptr;
+    memcpy(writeptr, &factor, 4);
+    writeptr += 4;
+    writeptr = Align16CodePage(logger, writeptr);
 
 
-        rv = writeptr;
+    char* code_start = writeptr;
 
-        // inject jump to our new code
-        // mov rcx,new_page
-        writeptr = overwrite_addr;
-        *writeptr++ = 0x48;
-        *writeptr++ = 0xb9;
-        memcpy(writeptr, &new_page, 8);
-        writeptr += 8;
-        // jmp rcx
-        *writeptr++ = 0xff;
-        *writeptr++ = 0xe1;
-    } else {
-        logger.Log("Unexpected bytes found, not applying patch.\n");
-    }
+    // multiply xmm12 with given factor
+    // movss xmm7,factor
+    char* factor_load_relative_to = writeptr + 8;
+    int factor_load_diff = factor_literal_ptr - factor_load_relative_to;
+    *writeptr++ = 0xf3;
+    *writeptr++ = 0x0f;
+    *writeptr++ = 0x10;
+    *writeptr++ = 0x3d;
+    memcpy(writeptr, &factor_load_diff, 4);
+    writeptr += 4;
+    // mulss xmm12,xmm7
+    *writeptr++ = 0xf3;
+    *writeptr++ = 0x44;
+    *writeptr++ = 0x0f;
+    *writeptr++ = 0x59;
+    *writeptr++ = 0xe7;
+
+    // replace code we overwrote
+    memcpy(writeptr, overwrite_bytes, replace_size);
+    writeptr += replace_size;
+
+    // jump back
+    // mov rax,overwrite_end
+    *writeptr++ = 0x48;
+    *writeptr++ = 0xb8;
+    char* overwrite_end = overwrite_addr + replace_size;
+    memcpy(writeptr, &overwrite_end, 8);
+    writeptr += 8;
+    // jmp rax
+    *writeptr++ = 0xff;
+    *writeptr++ = 0xe0;
+
+    rv = writeptr;
+
+    // inject jump to our new code
+    // mov rcx,code_start
+    writeptr = overwrite_addr;
+    *writeptr++ = 0x48;
+    *writeptr++ = 0xb9;
+    memcpy(writeptr, &code_start, 8);
+    writeptr += 8;
+    // jmp rcx
+    *writeptr++ = 0xff;
+    *writeptr++ = 0xe1;
 
     return rv;
 }
 
-static void* InjectInvestigationCursorSpeedAdjust(Logger& logger, void* new_page, float factor,
-                                                  void* codeBase) {
-    char* overwrite_addr = reinterpret_cast<char*>(codeBase) + 0x1D012F;
-    constexpr unsigned int replace_size = 0xc;
-    PageUnprotect unprotect(logger, overwrite_addr, replace_size);
-
-    void* rv = new_page;
-
-    // modify code
-    char overwrite_bytes[replace_size];
-    char expected_bytes[replace_size] = {0x48, 0x8b, 0x8b, 0xe8, 0x02, 0x00,
-                                         0x00, 0xf3, 0x45, 0x0f, 0x59, 0xc4};
-    memcpy(overwrite_bytes, overwrite_addr, replace_size);
-    if (memcmp(overwrite_bytes, expected_bytes, replace_size) == 0) {
-        // rax, rcx, xmm6, xmm7 are free to use
-
-        // we appear to have found the correct bytes
-        char* writeptr = reinterpret_cast<char*>(new_page);
-        char* factor_literal_ptr = writeptr;
-        memcpy(writeptr, &factor, 4);
-        writeptr += 4;
-        writeptr = Align16CodePage(logger, writeptr);
-
-
-        char* code_start = writeptr;
-
-        // multiply xmm12 with given factor
-        // movss xmm7,factor
-        char* factor_load_relative_to = writeptr + 8;
-        int factor_load_diff = factor_literal_ptr - factor_load_relative_to;
-        *writeptr++ = 0xf3;
-        *writeptr++ = 0x0f;
-        *writeptr++ = 0x10;
-        *writeptr++ = 0x3d;
-        memcpy(writeptr, &factor_load_diff, 4);
-        writeptr += 4;
-        // mulss xmm12,xmm7
-        *writeptr++ = 0xf3;
-        *writeptr++ = 0x44;
-        *writeptr++ = 0x0f;
-        *writeptr++ = 0x59;
-        *writeptr++ = 0xe7;
-
-        // replace code we overwrote
-        memcpy(writeptr, overwrite_bytes, replace_size);
-        writeptr += replace_size;
-
-        // jump back
-        // mov rax,overwrite_end
-        *writeptr++ = 0x48;
-        *writeptr++ = 0xb8;
-        char* overwrite_end = overwrite_addr + replace_size;
-        memcpy(writeptr, &overwrite_end, 8);
-        writeptr += 8;
-        // jmp rax
-        *writeptr++ = 0xff;
-        *writeptr++ = 0xe0;
-
-        rv = writeptr;
-
-        // inject jump to our new code
-        // mov rcx,code_start
-        writeptr = overwrite_addr;
-        *writeptr++ = 0x48;
-        *writeptr++ = 0xb9;
-        memcpy(writeptr, &code_start, 8);
-        writeptr += 8;
-        // jmp rcx
-        *writeptr++ = 0xff;
-        *writeptr++ = 0xe1;
-    } else {
-        logger.Log("Unexpected bytes found, not applying patch.\n");
-    }
-
-    return rv;
-}
-
-static void FixJuryPitCrash(Logger& logger, void* codeBase) {
-    char* code_start_addr = reinterpret_cast<char*>(codeBase) + 0x5C1036;
-    char* target_start_addr = reinterpret_cast<char*>(codeBase) + 0x5C1076;
+static void FixJuryPitCrash(GameVersion version, Logger& logger, void* codeBase) {
+    constexpr int offset_english_v1 = 0x5C1036;
+    constexpr int offset_japanese_v1 = 0x5C1A76;
+    int offset = SelectOffset(version, offset_english_v1, offset_japanese_v1);
+    char* code_start_addr = reinterpret_cast<char*>(codeBase) + offset;
+    char* target_start_addr = code_start_addr + 0x40;
     PageUnprotect unprotect(logger, code_start_addr, 0x4a);
 
     // setup code in the between-function padding, barely enough space there...
@@ -485,9 +507,9 @@ static void* SetupHacks() {
 
     void* codeBase = nullptr;
     void* rdataBase = nullptr;
-    FindImageBase(logger, &codeBase, &rdataBase);
+    GameVersion version = FindImageBase(logger, &codeBase, &rdataBase);
 
-    if (!codeBase || !rdataBase) {
+    if (version == GameVersion::Unknown || !codeBase || !rdataBase) {
         logger.Log("Failed finding executable in memory -- wrong game or version?\n");
         return nullptr;
     }
@@ -501,7 +523,7 @@ static void* SetupHacks() {
 
     if (ini.GetBoolean("Main", "InjectNullCheckForJuryPit", true)) {
         logger.Log("Applying InjectNullCheckForJuryPit...\n");
-        FixJuryPitCrash(logger, codeBase);
+        FixJuryPitCrash(version, logger, codeBase);
     }
 
     if (ini.GetBoolean("Main", "ReportAsHighDpiAware", true)) {
@@ -512,14 +534,28 @@ static void* SetupHacks() {
     // run at 60 fps or whatever
     float fps = ini.GetFloat("Main", "AnimationFps", 60.0f);
     if (fps != 30.0f) {
-        logger.Log("Applying AnimationFps...\n");
-        // 3d render update speed
-        WriteFloat(logger, reinterpret_cast<char*>(codeBase) + 0x57227, fps);
+        constexpr int offset_english_v1 = 0x57227;
+        constexpr int offset_japanese_v1 = 0x57227;
+        int offset = SelectOffset(version, offset_english_v1, offset_japanese_v1);
+        if (offset) {
+            logger.Log("Applying AnimationFps...\n");
+            // 3d render update speed
+            WriteFloat(logger, reinterpret_cast<char*>(codeBase) + offset, fps);
+        } else {
+            logger.Log("No offset for AnimationFps.\n");
+        }
     }
 
     if (ini.GetBoolean("Main", "DisplayAllRenderResolutions", true)) {
-        logger.Log("Applying DisplayAllRenderResolutions...\n");
-        WriteByte(logger, reinterpret_cast<char*>(codeBase) + 0x5D2A6, 0xeb); // jz -> jmp
+        constexpr int offset_english_v1 = 0x5D2A6;
+        constexpr int offset_japanese_v1 = 0x5D2A6;
+        int offset = SelectOffset(version, offset_english_v1, offset_japanese_v1);
+        if (offset) {
+            logger.Log("Applying DisplayAllRenderResolutions...\n");
+            WriteByte(logger, reinterpret_cast<char*>(codeBase) + offset, 0xeb); // jz -> jmp
+        } else {
+            logger.Log("No offset for DisplayAllRenderResolutions.\n");
+        }
     }
 
     // allocate extra page for code
@@ -534,14 +570,15 @@ static void* SetupHacks() {
     if (ini.GetBoolean("Main", "InjectSleepInMainThread", true)) {
         int ms = ini.GetInteger("Main", "MainThreadSleepTime", 10);
         logger.Log("Applying InjectSleepInMainThread...\n");
-        free_space_ptr = InjectSleepInMainThread(logger, free_space_ptr, ms, codeBase, sleepAddr);
+        free_space_ptr =
+            InjectSleepInMainThread(version, logger, free_space_ptr, ms, codeBase, sleepAddr);
         free_space_ptr = Align16CodePage(logger, free_space_ptr);
     }
     if (ini.GetBoolean("Main", "InjectSleepInAudioDeviceCountCheckThread", true)) {
         int ms = ini.GetInteger("Main", "AudioDeviceCountCheckThreadSleepTime", 1000);
         logger.Log("Applying InjectSleepInAudioDeviceCountCheckThread...\n");
-        free_space_ptr = InjectSleepInAudioDeviceCountCheckThread(logger, free_space_ptr, ms,
-                                                                  codeBase, sleepAddr);
+        free_space_ptr = InjectSleepInAudioDeviceCountCheckThread(version, logger, free_space_ptr,
+                                                                  ms, codeBase, sleepAddr);
         free_space_ptr = Align16CodePage(logger, free_space_ptr);
     }
 
@@ -550,7 +587,7 @@ static void* SetupHacks() {
     float adjustedCursorMoveSpeed = rawCursorMoveSpeed / (fps / 30.0f);
     if (adjustedCursorMoveSpeed != 1.0f) {
         logger.Log("Applying InvestigationCursorMoveSpeed...\n");
-        free_space_ptr = InjectInvestigationCursorSpeedAdjust(logger, free_space_ptr,
+        free_space_ptr = InjectInvestigationCursorSpeedAdjust(version, logger, free_space_ptr,
                                                               adjustedCursorMoveSpeed, codeBase);
         free_space_ptr = Align16CodePage(logger, free_space_ptr);
     }
