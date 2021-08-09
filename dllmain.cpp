@@ -537,6 +537,63 @@ static void InjectInvestigationCameraSpeedAdjust(GameVersion version, Logger& lo
     }
 }
 
+static void MultiWitnessBarPositionAdjust(GameVersion version, Logger& logger, void* codeBase) {
+    constexpr int offset_english_v1 = 0x140212c3a - 0x140001000;
+    constexpr int offset_japanese_v1 = 0x1402136ea - 0x140001000;
+    int offset = SelectOffset(version, offset_english_v1, offset_japanese_v1);
+
+    char* function_addr = reinterpret_cast<char*>(codeBase) + offset;
+
+    // all of these are movss xmm1,dword ptr[something], we'll just replace the values
+    constexpr int count = 4;
+    int addressOffsets[count] = {0x4, 0x11, 0x1b, 0x28};
+
+    // padding bytes of previous function
+    constexpr int valueCount = 2;
+    int valueOffsets[valueCount] = {-0x6c2, -0x6be};
+    // float newValues[valueCount] = {450.0f, 675.0f}; // top right of textbox
+    float newValues[valueCount] = {-435.0f, 951.0f}; // bottom left below textbox
+    // float newValues[valueCount] = {0.0f, 0.0f}; // top center
+
+    // verify
+    bool bad = false;
+    for (int i = 0; i < count; ++i) {
+        unsigned int tmp;
+        char* addr = function_addr + valueOffsets[i % valueCount];
+        memcpy(&tmp, addr, 4);
+        if (tmp != 0xccccccccu) {
+            logger.Log("Bad padding bytes at offset ").LogPtr(addr).Log(".\n");
+            bad = true;
+        } else {
+            logger.Log("Valid padding bytes at offset ").LogPtr(addr).Log(".\n");
+        }
+
+        char* addr_instr = function_addr + addressOffsets[i];
+        memcpy(&tmp, addr_instr, 4);
+        if (tmp != 0x0d100ff3) {
+            logger.Log("Bad instruction at offset ").LogPtr(addr_instr);
+            logger.Log(" (").LogHex(tmp).Log(").\n");
+            bad = true;
+        } else {
+            logger.Log("Valid instruction at offset ").LogPtr(addr_instr).Log(".\n");
+        }
+    }
+    if (bad) {
+        logger.Log("Found bad padding bytes, cancelling multi-witness-slider patch.\n");
+        return;
+    }
+
+    // replace values
+    for (int i = 0; i < count; ++i) {
+        int oldLiteralOffset;
+        char* offsetAddress = function_addr + addressOffsets[i] + 4;
+        float newLiteral = newValues[i % valueCount];
+        char* newLiteralAddress = function_addr + valueOffsets[i % valueCount];
+        WriteFloat(logger, newLiteralAddress, newLiteral);
+        WriteInt(logger, offsetAddress, static_cast<int>(newLiteralAddress - (offsetAddress + 4)));
+    }
+}
+
 static void FixJuryPitCrash(GameVersion version, Logger& logger, void* codeBase) {
     constexpr int offset_english_v1 = 0x5C1036;
     constexpr int offset_japanese_v1 = 0x5C1A76;
@@ -669,6 +726,10 @@ static void* SetupHacks() {
     if (adjustedCameraMoveSpeed != 1.0f) {
         logger.Log("Applying InvestigationCameraMoveSpeed...\n");
         InjectInvestigationCameraSpeedAdjust(version, logger, adjustedCameraMoveSpeed, codeBase);
+    }
+
+    if (ini.GetBoolean("Main", "AdjustMultiWitnessBarPosition", false)) {
+        MultiWitnessBarPositionAdjust(version, logger, codeBase);
     }
 
     // mark newly allocated page as executable
