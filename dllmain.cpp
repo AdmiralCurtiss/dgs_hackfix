@@ -626,6 +626,74 @@ static void FixJuryPitCrash(GameVersion version, Logger& logger, void* codeBase)
     *writeptr++ = 0x90;
 }
 
+static void* MouseWheelBacklogScrollSpeedAdjust(GameVersion version, Logger& logger, void* new_page,
+                                                float factor, void* codeBase) {
+    constexpr int offset_english_v1 = 0x140199f60 - 0x140001000;
+    constexpr int offset_japanese_v1 = offset_english_v1 + 0xAB0;
+    int offset = SelectOffset(version, offset_english_v1, offset_japanese_v1);
+
+    constexpr int replacementCount = 2;
+    int replacementOffsets[replacementCount] = {0x38e, 0x3dd};
+
+    char* writeptr = reinterpret_cast<char*>(new_page);
+    char* factor_literal_ptr = writeptr;
+    memcpy(writeptr, &factor, 4);
+    writeptr += 4;
+
+    for (int i = 0; i < replacementCount; ++i) {
+        constexpr unsigned int replaceSize = 8 + 5;
+        char oldData[replaceSize];
+        char* code_start_addr = reinterpret_cast<char*>(codeBase) + offset + replacementOffsets[i];
+        PageUnprotect unprotect(logger, code_start_addr, replaceSize);
+        std::memcpy(oldData, code_start_addr, replaceSize);
+        std::memset(code_start_addr, 0x90, replaceSize);
+
+        writeptr = Align16CodePage(logger, writeptr);
+        char* new_code_address = writeptr;
+        std::memcpy(writeptr, oldData, replaceSize);
+        writeptr += replaceSize;
+
+        // multiply xmm12 with given factor
+        // movss xmm1,factor
+        char* factor_load_relative_to = writeptr + 8;
+        int factor_load_diff = factor_literal_ptr - factor_load_relative_to;
+        *writeptr++ = 0xf3;
+        *writeptr++ = 0x0f;
+        *writeptr++ = 0x10;
+        *writeptr++ = 0x0d;
+        memcpy(writeptr, &factor_load_diff, 4);
+        writeptr += 4;
+        // mulss xmm0,xmm1
+        *writeptr++ = 0xf3;
+        *writeptr++ = 0x0f;
+        *writeptr++ = 0x59;
+        *writeptr++ = 0xc1;
+
+        // mov rax,backjump_address
+        *writeptr++ = 0x48;
+        *writeptr++ = 0xb8;
+        char* backjump_address = code_start_addr + replaceSize;
+        memcpy(writeptr, &backjump_address, 8);
+        writeptr += 8;
+        // jmp rax
+        *writeptr++ = 0xff;
+        *writeptr++ = 0xe0;
+
+        // at injection location:
+        // mov rax,new_code_address
+        char* w = code_start_addr;
+        *w++ = 0x48;
+        *w++ = 0xb8;
+        memcpy(w, &new_code_address, 8);
+        w += 8;
+        // jmp rax
+        *w++ = 0xff;
+        *w++ = 0xe0;
+    }
+
+    return writeptr;
+}
+
 static PDirectInput8Create addr_PDirectInput8Create = 0;
 static void* SetupHacks() {
     Logger logger("dgsfix.log");
@@ -728,6 +796,14 @@ static void* SetupHacks() {
         InjectInvestigationCameraSpeedAdjust(version, logger, adjustedCameraMoveSpeed, codeBase);
     }
 
+    float rawBacklogScrollSpeed = ini.GetFloat("Main", "BacklogMousewheelScrollSpeed", 1.0f);
+    float adjustedBacklogScrollSpeed = rawBacklogScrollSpeed * (fps / 30.0f);
+    if (adjustedBacklogScrollSpeed != 1.0f) {
+        free_space_ptr = MouseWheelBacklogScrollSpeedAdjust(version, logger, free_space_ptr,
+                                                            adjustedBacklogScrollSpeed, codeBase);
+        free_space_ptr = Align16CodePage(logger, free_space_ptr);
+    }
+
     if (ini.GetBoolean("Main", "AdjustMultiWitnessBarPosition", false)) {
         MultiWitnessBarPositionAdjust(version, logger, codeBase);
     }
@@ -736,6 +812,7 @@ static void* SetupHacks() {
     {
         DWORD tmpdword;
         VirtualProtect(new_page, 0x1000, PAGE_EXECUTE_READ, &tmpdword);
+        FlushInstructionCache(GetCurrentProcess(), new_page, 0x1000);
     }
 
     return new_page;
