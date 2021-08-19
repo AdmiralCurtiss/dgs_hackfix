@@ -1,10 +1,11 @@
 Hackfix for a few issues in the PC port:
 - Animation framerate can now be set to arbitrary rate. (defaults to 60 but can be freely adjusted in the ini; set to 30 if you prefer the unpatched game's update rate)
-- Cursor and camera movement speed properly adjust to selected framerate, and can be freely adjusted if desired.
+- Several patches so player interaction properly adjusts to selected animation framerate -- some actions would become too fast or too slow by default. The patched values can also be adjusted in the ini.
 - Resolution can now be set to arbitrary resolutions reported by your GPU/Monitor.
 - CPU usage on some threads is now no longer unnecessarily high.
 - Reports process as High-DPI aware so it doesn't get scaled by Windows.
-- Attempt at fixing the crash some people experience when interacting with the Jury.
+- Fixes the crash some people experience when trying to 'pit' jury members.
+- Has option (disabled by default) to move the multi-witness slider bar, as its default position may cover up some animations.
 
 All options are can be enabled/disabled or configured in dgs.ini.
 
