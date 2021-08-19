@@ -952,6 +952,7 @@ static void* SetupHacks() {
     float rawBacklogScrollSpeed = ini.GetFloat("Main", "BacklogMousewheelScrollSpeed", 1.0f);
     float adjustedBacklogScrollSpeed = rawBacklogScrollSpeed * (fps / 30.0f);
     if (adjustedBacklogScrollSpeed != 1.0f) {
+        logger.Log("Applying MouseWheelBacklogScrollSpeedAdjust...\n");
         free_space_ptr = MouseWheelBacklogScrollSpeedAdjust(version, logger, free_space_ptr,
                                                             adjustedBacklogScrollSpeed, codeBase);
         free_space_ptr = Align16CodePage(logger, free_space_ptr);
@@ -960,6 +961,7 @@ static void* SetupHacks() {
     float rawEvidenceRotateSpeed = ini.GetFloat("Main", "EvidenceMouseRotateSpeed", 1.0f);
     float adjustedEvidenceRotateSpeed = rawEvidenceRotateSpeed * (fps / 30.0f);
     if (adjustedEvidenceRotateSpeed != 1.0f) {
+        logger.Log("Applying MouseEvidenceRotateSpeedAdjust...\n");
         free_space_ptr = MouseEvidenceRotateSpeedAdjust(version, logger, free_space_ptr,
                                                         adjustedEvidenceRotateSpeed, codeBase);
         free_space_ptr = Align16CodePage(logger, free_space_ptr);
