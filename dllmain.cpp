@@ -552,7 +552,8 @@ static void InjectInvestigationCameraSpeedAdjust(GameVersion version, Logger& lo
     }
 }
 
-static void MultiWitnessBarPositionAdjust(GameVersion version, Logger& logger, void* codeBase) {
+static void MultiWitnessBarPositionAdjust(GameVersion version, Logger& logger, void* codeBase,
+                                          float xpos, float ypos) {
     constexpr int offset_english_v1 = 0x140212c3a - 0x140001000;
     constexpr int offset_japanese_v1 = 0x1402136ea - 0x140001000;
     int offset = SelectOffset(version, offset_english_v1, offset_japanese_v1);
@@ -566,9 +567,7 @@ static void MultiWitnessBarPositionAdjust(GameVersion version, Logger& logger, v
     // padding bytes of previous function
     constexpr int valueCount = 2;
     int valueOffsets[valueCount] = {-0x6c2, -0x6be};
-    // float newValues[valueCount] = {450.0f, 675.0f}; // top right of textbox
-    float newValues[valueCount] = {-435.0f, 951.0f}; // bottom left below textbox
-    // float newValues[valueCount] = {0.0f, 0.0f}; // top center
+    float newValues[valueCount] = {xpos, ypos};
 
     // verify
     bool bad = false;
@@ -967,7 +966,10 @@ static void* SetupHacks() {
     }
 
     if (ini.GetBoolean("Main", "AdjustMultiWitnessBarPosition", false)) {
-        MultiWitnessBarPositionAdjust(version, logger, codeBase);
+        float x = ini.GetFloat("Main", "MultiWitnessBarPositionX", -435.0f);
+        float y = ini.GetFloat("Main", "MultiWitnessBarPositionY", 951.0f);
+        logger.Log("Applying MultiWitnessBarPositionAdjust...\n");
+        MultiWitnessBarPositionAdjust(version, logger, codeBase, x, y);
     }
 
     // mark newly allocated page as executable
