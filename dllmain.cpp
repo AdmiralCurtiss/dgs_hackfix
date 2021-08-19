@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 
+#include <array>
 #include <cinttypes>
 #include <cstdio>
 
@@ -107,6 +108,20 @@ struct PageUnprotect {
     }
 };
 } // namespace
+
+template<size_t S>
+static std::array<char, S> ReadInstruction(char*& ptr) {
+    std::array<char, S> data;
+    memcpy(data.data(), ptr, S);
+    ptr += S;
+    return data;
+}
+
+template<size_t S>
+static void WriteInstruction(const std::array<char, S>& data, char*& ptr) {
+    memcpy(ptr, data.data(), S);
+    ptr += S;
+}
 
 static int SelectOffset(GameVersion version, int en, int jp) {
     switch (version) {
@@ -694,6 +709,145 @@ static void* MouseWheelBacklogScrollSpeedAdjust(GameVersion version, Logger& log
     return writeptr;
 }
 
+static void* MouseEvidenceRotateSpeedAdjust(GameVersion version, Logger& logger, void* new_page,
+                                            float factor, void* codeBase) {
+    constexpr int offset_english_v1 = 0x1401a7f55 - 0x140001000;
+    constexpr int offset_japanese_v1 = offset_english_v1 + 0xAB0;
+    int offset = SelectOffset(version, offset_english_v1, offset_japanese_v1);
+
+    char* writeptr = reinterpret_cast<char*>(new_page);
+    char* factor_literal_ptr = writeptr;
+    memcpy(writeptr, &factor, 4);
+    writeptr += 4;
+
+    char* code_start_addr = reinterpret_cast<char*>(codeBase) + offset;
+    PageUnprotect unprotect(logger, code_start_addr, 0x2f);
+
+    char* code = code_start_addr;
+    auto instr_a0 = ReadInstruction<7>(code);
+    auto instr_a1 = ReadInstruction<3>(code);
+    auto instr_a2 = ReadInstruction<4>(code);
+    auto instr_a3 = ReadInstruction<5>(code);
+    char* call_address_a = code;
+    code += 5;
+    char* code_start_addr_2 = code;
+    auto instr_b0 = ReadInstruction<7>(code);
+    auto instr_b1 = ReadInstruction<3>(code); // this restores rcx to the correct value
+    auto instr_b2 = ReadInstruction<5>(code);
+    auto instr_b3 = ReadInstruction<3>(code);
+    char* call_address_b = code;
+
+    std::memset(code_start_addr, 0x90, 7 + 3 + 4 + 5);
+    std::memset(code_start_addr_2, 0x90, 7 + 3 + 5 + 3);
+
+    {
+        writeptr = Align16CodePage(logger, writeptr);
+        char* start = writeptr;
+        WriteInstruction(instr_a0, writeptr);
+        WriteInstruction(instr_a1, writeptr);
+        WriteInstruction(instr_a2, writeptr);
+        WriteInstruction(instr_a3, writeptr);
+
+        // movss xmm0,factor
+        char* factor_load_relative_to = writeptr + 8;
+        int factor_load_diff = factor_literal_ptr - factor_load_relative_to;
+        *writeptr++ = 0xf3;
+        *writeptr++ = 0x0f;
+        *writeptr++ = 0x10;
+        *writeptr++ = 0x05;
+        memcpy(writeptr, &factor_load_diff, 4);
+        writeptr += 4;
+
+        // mulss xmm1,xmm0
+        *writeptr++ = 0xf3;
+        *writeptr++ = 0x0f;
+        *writeptr++ = 0x59;
+        *writeptr++ = 0xc8;
+
+        // mov rcx,backjump_addr
+        char* backjump_addr = call_address_a - 3;
+        *writeptr++ = 0x48;
+        *writeptr++ = 0xb9;
+        memcpy(writeptr, &backjump_addr, 8);
+        writeptr += 8;
+        // jmp rcx
+        *writeptr++ = 0xff;
+        *writeptr++ = 0xe1;
+        char* end = writeptr;
+
+        // restore rcx
+        writeptr = backjump_addr;
+        WriteInstruction(instr_b1, writeptr);
+
+        // jump to code
+        // mov rcx,start
+        writeptr = code_start_addr;
+        *writeptr++ = 0x48;
+        *writeptr++ = 0xb9;
+        memcpy(writeptr, &start, 8);
+        writeptr += 8;
+        // jmp rcx
+        *writeptr++ = 0xff;
+        *writeptr++ = 0xe1;
+
+        writeptr = end;
+    }
+
+    {
+        writeptr = Align16CodePage(logger, writeptr);
+        char* start = writeptr;
+        WriteInstruction(instr_b0, writeptr);
+        WriteInstruction(instr_b2, writeptr);
+        WriteInstruction(instr_b3, writeptr);
+
+        // movss xmm0,factor
+        char* factor_load_relative_to = writeptr + 8;
+        int factor_load_diff = factor_literal_ptr - factor_load_relative_to;
+        *writeptr++ = 0xf3;
+        *writeptr++ = 0x0f;
+        *writeptr++ = 0x10;
+        *writeptr++ = 0x05;
+        memcpy(writeptr, &factor_load_diff, 4);
+        writeptr += 4;
+
+        // mulss xmm1,xmm0
+        *writeptr++ = 0xf3;
+        *writeptr++ = 0x0f;
+        *writeptr++ = 0x59;
+        *writeptr++ = 0xc8;
+
+        // mov rcx,backjump_addr
+        char* backjump_addr = call_address_b - 3;
+        *writeptr++ = 0x48;
+        *writeptr++ = 0xb9;
+        memcpy(writeptr, &backjump_addr, 8);
+        writeptr += 8;
+        // jmp rcx
+        *writeptr++ = 0xff;
+        *writeptr++ = 0xe1;
+        char* end = writeptr;
+
+        // restore rcx
+        writeptr = backjump_addr;
+        WriteInstruction(instr_b1, writeptr);
+
+        // jump to code
+        // mov rcx,start
+        writeptr = code_start_addr_2;
+        *writeptr++ = 0x48;
+        *writeptr++ = 0xb9;
+        memcpy(writeptr, &start, 8);
+        writeptr += 8;
+        // jmp rcx
+        *writeptr++ = 0xff;
+        *writeptr++ = 0xe1;
+
+        writeptr = end;
+    }
+
+    return writeptr;
+}
+
 static PDirectInput8Create addr_PDirectInput8Create = 0;
 static void* SetupHacks() {
     Logger logger("dgsfix.log");
@@ -801,6 +955,14 @@ static void* SetupHacks() {
     if (adjustedBacklogScrollSpeed != 1.0f) {
         free_space_ptr = MouseWheelBacklogScrollSpeedAdjust(version, logger, free_space_ptr,
                                                             adjustedBacklogScrollSpeed, codeBase);
+        free_space_ptr = Align16CodePage(logger, free_space_ptr);
+    }
+
+    float rawEvidenceRotateSpeed = ini.GetFloat("Main", "EvidenceMouseRotateSpeed", 1.0f);
+    float adjustedEvidenceRotateSpeed = rawEvidenceRotateSpeed * (fps / 30.0f);
+    if (adjustedEvidenceRotateSpeed != 1.0f) {
+        free_space_ptr = MouseEvidenceRotateSpeedAdjust(version, logger, free_space_ptr,
+                                                        adjustedEvidenceRotateSpeed, codeBase);
         free_space_ptr = Align16CodePage(logger, free_space_ptr);
     }
 
