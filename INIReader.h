@@ -391,6 +391,12 @@ public:
     // and valid false values are "false", "no", "off", "0" (not case sensitive).
     bool GetBoolean(std::string section, std::string name, bool default_value) const;
 
+    void Clear() {
+        _error = 0;
+        _values.clear();
+        _sections.clear();
+    }
+
 protected:
     int _error;
     std::map<std::string, std::string> _values;

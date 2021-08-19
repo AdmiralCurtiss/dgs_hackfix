@@ -712,8 +712,8 @@ static void* SetupHacks() {
     INIReader ini("dgs.ini");
 
     if (ini.ParseError() != 0) {
-        logger.Log("INI parsing failed.\n");
-        return nullptr;
+        logger.Log("INI parsing failed, patching with defaults.\n");
+        ini.Clear();
     }
 
     if (ini.GetBoolean("Main", "InjectNullCheckForJuryPit", true)) {
