@@ -23,7 +23,7 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <None Include="dgs_chill.def">
+    <None Include="dgs_dinput8.def">
       <Filter>Source Files</Filter>
     </None>
     <None Include="dgs.ini">

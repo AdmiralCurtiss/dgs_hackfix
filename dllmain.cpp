@@ -847,11 +847,24 @@ static void* MouseEvidenceRotateSpeedAdjust(GameVersion version, Logger& logger,
     return writeptr;
 }
 
+#ifdef BUILD_AS_DINPUT8
 static PDirectInput8Create addr_PDirectInput8Create = 0;
-static void* SetupHacks() {
-    Logger logger("dgsfix.log");
+#endif
 
+static void* SetupHacks() {
+    // Sleep(10000);
+    // 0x1405aaffa
+    // WriteByte(logger, reinterpret_cast<char*>(0x14040643e), 0xeb);
+
+#ifdef BUILD_AS_DINPUT8
+    Logger logger("dgsfix_dinput8.log");
+#else
+    Logger logger("dgsfix_standalone.log");
+#endif
+
+#ifdef BUILD_AS_DINPUT8
     addr_PDirectInput8Create = LoadForwarderAddress(logger);
+#endif
 
     void* codeBase = nullptr;
     void* rdataBase = nullptr;
@@ -985,6 +998,7 @@ static void* SetupHacks() {
 }
 static void* dummy = SetupHacks();
 
+#ifdef BUILD_AS_DINPUT8
 extern "C" {
 HRESULT DirectInput8Create(HINSTANCE hinst, DWORD dwVersion, REFIID riidltf, LPVOID* ppvOut,
                            void* punkOuter) {
@@ -995,3 +1009,4 @@ HRESULT DirectInput8Create(HINSTANCE hinst, DWORD dwVersion, REFIID riidltf, LPV
     return addr(hinst, dwVersion, riidltf, ppvOut, punkOuter);
 }
 }
+#endif
