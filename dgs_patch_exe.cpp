@@ -31,6 +31,8 @@ int patch(const char* filename, std::FILE*& f) {
     constexpr uint32_t filesize_jp = 12010232;
     constexpr uint32_t crc32_ww = 0x14C34E5E;
     constexpr uint32_t crc32_jp = 0x818E535B;
+    constexpr uint32_t crc32_patched_ww = 0x15FBFC2E;
+    constexpr uint32_t crc32_patched_jp = 0x7EE22847;
 
     if (_fseeki64(f, 0, SEEK_END) != 0) {
         printf("failed to seek to end in file %s\n", filename);
@@ -71,20 +73,25 @@ int patch(const char* filename, std::FILE*& f) {
 
     checksum = crc_finalize(checksum);
 
-    if (!(checksum == crc32_jp || checksum == crc32_ww)) {
+    if (!(checksum == crc32_jp || checksum == crc32_ww || checksum == crc32_patched_jp
+          || checksum == crc32_patched_ww)) {
         printf("file %s is not a supported executable (mismatching checksum)\n", filename);
         return -1;
     }
 
-    if (checksum == crc32_jp || checksum == crc32_ww) {
-        // apply patch
-        bool is_jp = checksum == crc32_jp;
-        const uint32_t offset_export_buffer = is_jp ? 0xab0f70 : 0xab05a0;
-        const uint32_t offset_free_space_near_imports = is_jp ? 0xab2d60 : 0xab2390;
-        const uint32_t offset_nvidia_optimus_in_export_buffer = 0x64 - (is_jp ? 0x17 : 0x15);
-        const uint32_t length_nvidia_optimus = 0x14;
-        const uint32_t offset_imports_header = 0x1f8;
+    bool is_jp = checksum == crc32_jp || checksum == crc32_patched_jp;
+    const uint32_t offset_export_buffer = is_jp ? 0xab0f70 : 0xab05a0;
+    const uint32_t offset_free_space_near_imports = is_jp ? 0xab2d60 : 0xab2390;
+    const uint32_t offset_nvidia_optimus_in_export_buffer = 0x64 - (is_jp ? 0x17 : 0x15);
+    const uint32_t length_nvidia_optimus = 0x14;
+    const uint32_t offset_imports_header = 0x1f8;
+    const uint32_t offset_clobbered_array_ram = is_jp ? 0xab5ec0 : 0xab4eb0;
+    const uint32_t offset_clobbered_array_rom = is_jp ? 0xab3cc0 : 0xab32b0;
 
+    if (checksum == crc32_jp || checksum == crc32_ww) {
+        printf("patching file %s to load dgs_hackfix.dll...\n", filename);
+
+        // apply patch
         if (fseek(f, offset_imports_header, SEEK_SET) != 0) {
             printf("failed to seek\n");
             return -1;
@@ -142,7 +149,7 @@ int patch(const char* filename, std::FILE*& f) {
 
         // this is extremely ugly and overwrites valid and probably used data, the dll will fix it
         // up later
-        write_u32(is_jp ? 0xab5ec0 : 0xab4eb0,
+        write_u32(offset_clobbered_array_ram,
                   export_buffer.data() + export_buffer.size() - 0x4); // import address table
 
         // write result
@@ -170,7 +177,7 @@ int patch(const char* filename, std::FILE*& f) {
             printf("failed to write\n");
             return -1;
         }
-        if (fseek(f, is_jp ? 0xab3cc0 : 0xab32b0, SEEK_SET) != 0) {
+        if (fseek(f, offset_clobbered_array_rom, SEEK_SET) != 0) {
             printf("failed to seek\n");
             return -1;
         }
@@ -179,6 +186,102 @@ int patch(const char* filename, std::FILE*& f) {
             return -1;
         }
 
+        printf("successfully patched %s!\n", filename);
+        return 0;
+    }
+
+    if (checksum == crc32_patched_jp || checksum == crc32_patched_ww) {
+        printf("removing dgs_hackfix.dll patch from %s...\n", filename);
+
+        // reverse all the patches
+        if (fseek(f, offset_imports_header, SEEK_SET) != 0) {
+            printf("failed to seek\n");
+            return -1;
+        }
+        std::array<char, 0x8> header_buffer;
+        if (fread(header_buffer.data(), 1, header_buffer.size(), f) != header_buffer.size()) {
+            printf("failed to read\n");
+            return -1;
+        }
+        if (fseek(f, offset_export_buffer, SEEK_SET) != 0) {
+            printf("failed to seek\n");
+            return -1;
+        }
+        std::array<char, 0x64> export_buffer;
+        if (fread(export_buffer.data(), 1, export_buffer.size(), f) != export_buffer.size()) {
+            printf("failed to read\n");
+            return -1;
+        }
+        if (fseek(f, offset_free_space_near_imports, SEEK_SET) != 0) {
+            printf("failed to seek\n");
+            return -1;
+        }
+        std::array<char, 0x60> new_dll_buffer{};
+        if (fread(new_dll_buffer.data(), 1, new_dll_buffer.size(), f) != new_dll_buffer.size()) {
+            printf("failed to read\n");
+            return -1;
+        }
+        if (fseek(f, offset_clobbered_array_rom - 0x10, SEEK_SET) != 0) {
+            printf("failed to seek\n");
+            return -1;
+        }
+        std::array<char, 0x10> clobber_buffer;
+        if (fread(clobber_buffer.data(), 1, clobber_buffer.size(), f) != clobber_buffer.size()) {
+            printf("failed to read\n");
+            return -1;
+        }
+
+        const uint32_t ref_address = read_u32(export_buffer.data() + 0x2c);
+        const uint32_t base_address = ref_address - (offset_free_space_near_imports + 0x20);
+
+        write_u32(read_u32(header_buffer.data()) + 0x14, header_buffer.data());
+        write_u32(read_u32(header_buffer.data() + 4) - 0x14, header_buffer.data() + 4);
+        std::memcpy(&export_buffer[offset_nvidia_optimus_in_export_buffer], &new_dll_buffer[0x20],
+                    length_nvidia_optimus);
+        for (size_t i = offset_nvidia_optimus_in_export_buffer + length_nvidia_optimus;
+             i < export_buffer.size(); ++i) {
+            export_buffer[i] = (char)0;
+        }
+        write_u32((uint32_t)(offset_export_buffer + base_address
+                             + offset_nvidia_optimus_in_export_buffer),
+                  export_buffer.data() + 0x2c);
+        std::memset(new_dll_buffer.data(), 0, new_dll_buffer.size());
+
+        // write result
+        if (fseek(f, offset_imports_header, SEEK_SET) != 0) {
+            printf("failed to seek\n");
+            return -1;
+        }
+        if (fwrite(header_buffer.data(), 1, header_buffer.size(), f) != header_buffer.size()) {
+            printf("failed to write\n");
+            return -1;
+        }
+        if (fseek(f, offset_export_buffer, SEEK_SET) != 0) {
+            printf("failed to seek\n");
+            return -1;
+        }
+        if (fwrite(export_buffer.data(), 1, export_buffer.size(), f) != export_buffer.size()) {
+            printf("failed to write\n");
+            return -1;
+        }
+        if (fseek(f, offset_free_space_near_imports, SEEK_SET) != 0) {
+            printf("failed to seek\n");
+            return -1;
+        }
+        if (fwrite(new_dll_buffer.data(), 1, new_dll_buffer.size(), f) != new_dll_buffer.size()) {
+            printf("failed to write\n");
+            return -1;
+        }
+        if (fseek(f, offset_clobbered_array_rom, SEEK_SET) != 0) {
+            printf("failed to seek\n");
+            return -1;
+        }
+        if (fwrite(clobber_buffer.data(), 1, clobber_buffer.size(), f) != clobber_buffer.size()) {
+            printf("failed to write\n");
+            return -1;
+        }
+
+        printf("successfully removed patch from %s!\n", filename);
         return 0;
     }
 
@@ -191,5 +294,6 @@ int main(int argc, char** argv) {
     if (f) {
         fclose(f);
     }
+    system("pause");
     return rv;
 }
