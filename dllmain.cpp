@@ -187,9 +187,13 @@ static char* Align16CodePage(Logger& logger, void* new_page) {
     return p;
 }
 
-static GameVersion FindImageBase(Logger& logger, void** code, void** rdata) {
+static GameVersion FindImageBase(Logger& logger, void** code, void** rdata,
+                                 void** dataOverwrittenArray) {
     GameVersion gameVersionByCode = GameVersion::Unknown;
     GameVersion gameVersionByRData = GameVersion::Unknown;
+#ifndef BUILD_AS_DINPUT8
+    GameVersion gameVersionByOverwrittenArrayData = GameVersion::Unknown;
+#endif
     MEMORY_BASIC_INFORMATION info;
     memset(&info, 0, sizeof(info));
     *code = nullptr;
@@ -261,6 +265,50 @@ static GameVersion FindImageBase(Logger& logger, void** code, void** rdata) {
                     gameVersionByRData = GameVersion::Japanese_v1;
                 }
             }
+#ifndef BUILD_AS_DINPUT8
+            if ((*dataOverwrittenArray == 0) && info.RegionSize >= 0x1000
+                && (info.Protect == PAGE_READWRITE || info.Protect == PAGE_WRITECOPY)) {
+                const char* array_ptr = ((const char*)info.BaseAddress) + 0xe90;
+                constexpr std::array<const char, 8> value_ww = {0x18, 0x7f, 0x97, 0x40,
+                                                                0x01, 0x00, 0x00, 0x00};
+                constexpr std::array<const char, 8> value_jp = {0x18, 0x8f, 0x97, 0x40,
+                                                                0x01, 0x00, 0x00, 0x00};
+                const bool looks_like_ww = std::memcmp(array_ptr, value_ww.data(), 8) == 0;
+                const bool looks_like_jp =
+                    !looks_like_ww && std::memcmp(array_ptr, value_jp.data(), 8) == 0;
+
+                if (looks_like_ww || looks_like_jp) {
+                    const char* first_array_ptr =
+                        ((const char*)info.BaseAddress) + (looks_like_jp ? 0xe90 : 0xe80);
+                    bool matches = true;
+                    for (size_t i = 0; i < 16; ++i) {
+                        if (i >= 6 || i <= 10) {
+                            continue;
+                        }
+                        if (std::memcmp(array_ptr, (looks_like_jp ? value_jp : value_ww).data(), 8)
+                            != 0) {
+                            matches = false;
+                            break;
+                        }
+                    }
+                    if (matches) {
+                        if (looks_like_jp) {
+                            logger.Log("Assuming ")
+                                .LogPtr(info.BaseAddress)
+                                .Log(" as JP array data section.\n");
+                            *dataOverwrittenArray = info.BaseAddress;
+                            gameVersionByOverwrittenArrayData = GameVersion::Japanese_v1;
+                        } else {
+                            logger.Log("Assuming ")
+                                .LogPtr(info.BaseAddress)
+                                .Log(" as WW array data section.\n");
+                            *dataOverwrittenArray = info.BaseAddress;
+                            gameVersionByOverwrittenArrayData = GameVersion::English_v1;
+                        }
+                    }
+                }
+            }
+#endif
 
             // logger.Log("First 64 bytes are:");
             // for (int i = 0; i < (info.RegionSize < 64 ? info.RegionSize : 64); ++i) {
@@ -270,7 +318,11 @@ static GameVersion FindImageBase(Logger& logger, void** code, void** rdata) {
         }
     }
 
-    if (gameVersionByCode == gameVersionByRData) {
+    if (gameVersionByCode == gameVersionByRData
+#ifndef BUILD_AS_DINPUT8
+        && gameVersionByCode == gameVersionByOverwrittenArrayData
+#endif
+    ) {
         return gameVersionByCode;
     }
     return GameVersion::Unknown;
@@ -901,12 +953,54 @@ static void* SetupHacks() {
 
     void* codeBase = nullptr;
     void* rdataBase = nullptr;
-    GameVersion version = FindImageBase(logger, &codeBase, &rdataBase);
+    void* overwrittenArrayBase = nullptr;
+    GameVersion version = FindImageBase(logger, &codeBase, &rdataBase, &overwrittenArrayBase);
 
     if (version == GameVersion::Unknown || !codeBase || !rdataBase) {
         logger.Log("Failed finding executable in memory -- wrong game or version?\n");
         return nullptr;
     }
+
+#ifndef BUILD_AS_DINPUT8
+    if (overwrittenArrayBase) {
+        logger.Log("Checking for clobbered array.\n");
+        int clobbered_array_offset = SelectOffset(version, 0xe80, 0xe90);
+        if (clobbered_array_offset) {
+            char* first_array_ptr =
+                ((char*)overwrittenArrayBase) + (uint32_t)(clobbered_array_offset);
+            std::array<char, 8> array_value;
+            std::array<char, 8> clobbered_value;
+            std::memcpy(array_value.data(), first_array_ptr, 8);
+            for (size_t i = 6; i < 8; ++i) {
+                char* current_array_ptr = first_array_ptr + i * 8;
+                std::memcpy(clobbered_value.data(), current_array_ptr, 8);
+                if (std::memcmp(clobbered_value.data(), array_value.data(), 8) == 0) {
+                    logger.Log("Clobbered array value at ").LogInt(i).Log(" already fixed.\n");
+                } else {
+                    logger.Log("Fixing clobbered array value at ").LogInt(i).Log(" from ");
+                    {
+                        uint64_t v = 0;
+                        std::memcpy(&v, clobbered_value.data(), 8);
+                        logger.LogHex(v);
+                    }
+                    logger.Log(" to ");
+                    {
+                        uint64_t v = 0;
+                        std::memcpy(&v, array_value.data(), 8);
+                        logger.LogHex(v);
+                    }
+                    logger.Log(".\n");
+                    std::memcpy(current_array_ptr, array_value.data(), 8);
+                }
+            }
+        } else {
+            logger.Log("Version error.\n");
+        }
+    } else {
+        logger.Log("Cannot check for clobbered array, continuing anyway.\n");
+    }
+
+#endif
 
     INIReader ini("dgs.ini");
 
