@@ -131,6 +131,7 @@ static int SelectOffset(GameVersion version, int en, int jp) {
     }
 }
 
+#ifdef BUILD_AS_DINPUT8
 using PDirectInput8Create = HRESULT (*)(HINSTANCE hinst, DWORD dwVersion, REFIID riidltf,
                                         LPVOID* ppvOut, void* punkOuter);
 static PDirectInput8Create LoadForwarderAddress(Logger& logger) {
@@ -156,6 +157,7 @@ static PDirectInput8Create LoadForwarderAddress(Logger& logger) {
     }
     return (PDirectInput8Create)addr;
 }
+#endif
 
 static void WriteFloat(Logger& logger, void* addr, float value) {
     logger.Log("Writing float ").LogFloat(value).Log(" to ").LogPtr(addr).Log(".\n");
@@ -186,7 +188,8 @@ static char* Align16CodePage(Logger& logger, void* new_page) {
 }
 
 static GameVersion FindImageBase(Logger& logger, void** code, void** rdata) {
-    GameVersion gameVersion = GameVersion::Unknown;
+    GameVersion gameVersionByCode = GameVersion::Unknown;
+    GameVersion gameVersionByRData = GameVersion::Unknown;
     MEMORY_BASIC_INFORMATION info;
     memset(&info, 0, sizeof(info));
     *code = nullptr;
@@ -208,28 +211,55 @@ static GameVersion FindImageBase(Logger& logger, void** code, void** rdata) {
                 .Log(".\n");
             if ((*code == 0) && (info.RegionSize == 0x953000 || info.RegionSize == 0x954000)
                 && info.Protect == PAGE_EXECUTE_READ) {
-                // could be code section, verify checksum
+                // could be code section, verify checksum of a known part
+                constexpr int offset_english_v1 = 0x5C1030;
+                constexpr int offset_japanese_v1 = 0x5C1A70;
+
                 crc_t crc = crc_init();
-                crc = crc_update(crc, info.BaseAddress, info.RegionSize);
+                crc = crc_update(
+                    crc,
+                    ((const char*)info.BaseAddress)
+                        + (info.RegionSize == 0x953000 ? offset_english_v1 : offset_japanese_v1),
+                    0x50);
                 crc = crc_finalize(crc);
                 logger.Log("Checksum is ").LogHex(crc).Log(".\n");
-                if (info.RegionSize == 0x953000 && crc == 0x21dbbfc0) {
-                    logger.Log("Appears to be the WW version.\n");
+                if (info.RegionSize == 0x953000 && crc == 0xb32acbf8) {
+                    logger.Log("Appears to be the WW code.\n");
                     *code = info.BaseAddress;
-                    gameVersion = GameVersion::English_v1;
-                } else if (info.RegionSize == 0x954000 && crc == 0xa0e848af) {
-                    logger.Log("Appears to be the JP version.\n");
+                    gameVersionByCode = GameVersion::English_v1;
+                } else if (info.RegionSize == 0x954000 && crc == 0xb32acbf8) {
+                    logger.Log("Appears to be the JP code.\n");
                     *code = info.BaseAddress;
-                    gameVersion = GameVersion::Japanese_v1;
+                    gameVersionByCode = GameVersion::Japanese_v1;
                 } else {
                     logger.Log("Could not identify code section.\n");
                 }
             }
             if ((*rdata == 0) && info.RegionSize == 0x160000 && info.Protect == PAGE_READONLY) {
-                // likely rdata section, can't really test this as the addresses have already been
-                // fixed up, so just assume it's right...
-                logger.Log("Assuming ").LogPtr(info.BaseAddress).Log(" as rdata section.\n");
-                *rdata = info.BaseAddress;
+                // likely rdata section
+                constexpr std::array<const char, 0x1D> executable_name_ww = {
+                    0x58, 0x50, 0x69, 0x70, 0x65, 0x4D, 0x61, 0x73, 0x74, 0x65,
+                    0x72, 0x52, 0x65, 0x6C, 0x65, 0x61, 0x73, 0x65, 0x57, 0x57,
+                    0x44, 0x58, 0x31, 0x31, 0x2E, 0x65, 0x78, 0x65, 0x00};
+                constexpr std::array<const char, 0x1B> executable_name_jp = {
+                    0x58, 0x50, 0x69, 0x70, 0x65, 0x4D, 0x61, 0x73, 0x74,
+                    0x65, 0x72, 0x52, 0x65, 0x6C, 0x65, 0x61, 0x73, 0x65,
+                    0x44, 0x58, 0x31, 0x31, 0x2E, 0x65, 0x78, 0x65, 0x00};
+                const char* executable_name_ptr_ww = ((const char*)info.BaseAddress) + 0x15D7D2;
+                const char* executable_name_ptr_jp = ((const char*)info.BaseAddress) + 0x15D7A2;
+                if (std::memcmp(executable_name_ptr_ww, executable_name_ww.data(),
+                                executable_name_ww.size())
+                    == 0) {
+                    logger.Log("Assuming ").LogPtr(info.BaseAddress).Log(" as WW rdata section.\n");
+                    *rdata = info.BaseAddress;
+                    gameVersionByRData = GameVersion::English_v1;
+                } else if (std::memcmp(executable_name_ptr_jp, executable_name_jp.data(),
+                                       executable_name_jp.size())
+                           == 0) {
+                    logger.Log("Assuming ").LogPtr(info.BaseAddress).Log(" as WW rdata section.\n");
+                    *rdata = info.BaseAddress;
+                    gameVersionByRData = GameVersion::Japanese_v1;
+                }
             }
 
             // logger.Log("First 64 bytes are:");
@@ -240,7 +270,10 @@ static GameVersion FindImageBase(Logger& logger, void** code, void** rdata) {
         }
     }
 
-    return gameVersion;
+    if (gameVersionByCode == gameVersionByRData) {
+        return gameVersionByCode;
+    }
+    return GameVersion::Unknown;
 }
 
 static void* InjectSleepInMainThread(GameVersion version, Logger& logger, void* new_page,
