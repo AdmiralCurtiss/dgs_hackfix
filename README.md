@@ -31,7 +31,7 @@ Steam Deck
 ----------
 
 - Switch to Desktop mode.
-- Place the contents of the 'steamdeck' folder (dgs_hackfix.dll, dgs_patch_exe.exe, and dgs.ino) into same folder as TGAAC.exe.
+- Place the contents of the 'steamdeck' folder (dgs_hackfix.dll, dgs_patch_exe.exe, and dgs.ini) into same folder as TGAAC.exe.
 - Add 'dgs_patch_exe.exe' as a non-Steam game.
 - Right-click the new entry -> Properties -> Compatibility, tick the 'Force the use of a specific Steam Play compatibility tool' checkbox, and select Proton Experimental.
 - Then run it once -- make sure the console window that appears says that the patch has been successfully applied.

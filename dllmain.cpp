@@ -260,7 +260,7 @@ static GameVersion FindImageBase(Logger& logger, void** code, void** rdata,
                 } else if (std::memcmp(executable_name_ptr_jp, executable_name_jp.data(),
                                        executable_name_jp.size())
                            == 0) {
-                    logger.Log("Assuming ").LogPtr(info.BaseAddress).Log(" as WW rdata section.\n");
+                    logger.Log("Assuming ").LogPtr(info.BaseAddress).Log(" as JP rdata section.\n");
                     *rdata = info.BaseAddress;
                     gameVersionByRData = GameVersion::Japanese_v1;
                 }
