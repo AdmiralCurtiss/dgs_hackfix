@@ -1009,4 +1009,8 @@ HRESULT DirectInput8Create(HINSTANCE hinst, DWORD dwVersion, REFIID riidltf, LPV
     return addr(hinst, dwVersion, riidltf, ppvOut, punkOuter);
 }
 }
+#else
+extern "C" {
+void DummyExport() {}
+}
 #endif

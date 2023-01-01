@@ -1,0 +1,3 @@
+LIBRARY   dgs_hackfix
+EXPORTS
+   DummyExport   @1

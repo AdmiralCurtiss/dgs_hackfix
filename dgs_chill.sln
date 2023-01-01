@@ -4,7 +4,10 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 VisualStudioVersion = 17.4.33205.214
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "dgs_dinput8", "dgs_dinput8.vcxproj", "{971B9C89-F3EB-41EE-9FF3-5A64A4CF22DE}"
+EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "dgs_standalone", "dgs_standalone.vcxproj", "{971B9C89-F3EB-41EE-9FF3-5A64A4CF22DF}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "dgs_patch_exe", "dgs_patch_exe.vcxproj", "{FE39509B-7688-4245-8820-4C579B4CDCC0}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -20,6 +23,10 @@ Global
 		{971B9C89-F3EB-41EE-9FF3-5A64A4CF22DF}.Debug|x64.Build.0 = Debug|x64
 		{971B9C89-F3EB-41EE-9FF3-5A64A4CF22DF}.Release|x64.ActiveCfg = Release|x64
 		{971B9C89-F3EB-41EE-9FF3-5A64A4CF22DF}.Release|x64.Build.0 = Release|x64
+		{FE39509B-7688-4245-8820-4C579B4CDCC0}.Debug|x64.ActiveCfg = Debug|x64
+		{FE39509B-7688-4245-8820-4C579B4CDCC0}.Debug|x64.Build.0 = Debug|x64
+		{FE39509B-7688-4245-8820-4C579B4CDCC0}.Release|x64.ActiveCfg = Release|x64
+		{FE39509B-7688-4245-8820-4C579B4CDCC0}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
