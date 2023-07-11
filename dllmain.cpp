@@ -5,6 +5,8 @@
 #include <array>
 #include <cinttypes>
 #include <cstdio>
+#include <memory>
+#include <thread>
 
 #include "INIReader.h"
 #include "crc32.h"
@@ -12,15 +14,33 @@
 namespace {
 enum class GameVersion {
     Unknown,
-    English_v1,
-    Japanese_v1,
+    English_v1,            // original release
+    Japanese_v1,           // original release
+    English_v1_encrypted,  // 2023-07-10 patch
+    Japanese_v1_encrypted, // 2023-07-10 patch
 };
 
 struct Logger {
     FILE* f;
 
-    Logger(const char* filename) {
+    Logger() {
+        f = nullptr;
+    }
+
+    explicit Logger(const char* filename) {
         f = fopen(filename, "w");
+    }
+
+    Logger(const Logger& other) = delete;
+    Logger(Logger&& other) {
+        this->f = other.f;
+        other.f = nullptr;
+    }
+    Logger& operator=(const Logger& other) = delete;
+    Logger& operator=(Logger&& other) {
+        this->f = other.f;
+        other.f = nullptr;
+        return *this;
     }
 
     ~Logger() {
@@ -188,7 +208,7 @@ static char* Align16CodePage(Logger& logger, void* new_page) {
 }
 
 static GameVersion FindImageBase(Logger& logger, void** code, void** rdata,
-                                 void** dataOverwrittenArray) {
+                                 void** dataOverwrittenArray, void** steamdrmBase) {
     GameVersion gameVersionByCode = GameVersion::Unknown;
     GameVersion gameVersionByRData = GameVersion::Unknown;
 #ifndef BUILD_AS_DINPUT8
@@ -228,17 +248,42 @@ static GameVersion FindImageBase(Logger& logger, void** code, void** rdata,
                 crc = crc_finalize(crc);
                 logger.Log("Checksum is ").LogHex(crc).Log(".\n");
                 if (info.RegionSize == 0x953000 && crc == 0xb32acbf8) {
-                    logger.Log("Appears to be the WW code.\n");
+                    logger.Log("Appears to be the WW code. (original release, decrypted)\n");
                     *code = info.BaseAddress;
                     gameVersionByCode = GameVersion::English_v1;
                 } else if (info.RegionSize == 0x954000 && crc == 0xb32acbf8) {
-                    logger.Log("Appears to be the JP code.\n");
+                    logger.Log("Appears to be the JP code. (original release, decrypted)\n");
                     *code = info.BaseAddress;
                     gameVersionByCode = GameVersion::Japanese_v1;
+                } else if (info.RegionSize == 0x953000 && crc == 0xa9b1dc0f) {
+                    logger.Log("Appears to be the WW code. (2023-07-10 patch, encrypted)\n");
+                    *code = info.BaseAddress;
+                    gameVersionByCode = GameVersion::English_v1_encrypted;
+                } else if (info.RegionSize == 0x954000
+                           && crc == 0xa9b1dc0f) { // this is a guess, might be different...
+                    logger.Log("Appears to be the JP code. (2023-07-10 patch, encrypted)\n");
+                    *code = info.BaseAddress;
+                    gameVersionByCode = GameVersion::Japanese_v1_encrypted;
                 } else {
                     logger.Log("Could not identify code section.\n");
                 }
             }
+            // if ((*steamdrmBase == 0) && (info.RegionSize == 0x33000)
+            //     && info.Protect == PAGE_EXECUTE_READ) {
+            //     // could be steam drm section, verify checksum of a known part
+            //     constexpr int offset = 0x3900;
+            //
+            //     crc_t crc = crc_init();
+            //     crc = crc_update(crc, ((const char*)info.BaseAddress) + offset, 0x80);
+            //     crc = crc_finalize(crc);
+            //     logger.Log("Checksum is ").LogHex(crc).Log(".\n");
+            //     if (crc == 0x6c4e2e9) {
+            //         logger.Log("Appears to be the steamdrm code.\n");
+            //         *steamdrmBase = info.BaseAddress;
+            //     } else {
+            //         logger.Log("Could not identify steamdrm section.\n");
+            //     }
+            // }
             if ((*rdata == 0) && info.RegionSize == 0x160000 && info.Protect == PAGE_READONLY) {
                 // likely rdata section
                 constexpr std::array<const char, 0x1D> executable_name_ww = {
@@ -315,16 +360,42 @@ static GameVersion FindImageBase(Logger& logger, void** code, void** rdata,
             //    logger.Log(" ").LogHex(*(reinterpret_cast<unsigned char*>(info.BaseAddress) + i));
             // }
             // logger.Log("\n");
+
+            // logger.Log("Data is:");
+            // for (int i = 0; i < info.RegionSize; ++i) {
+            //    if ((i % 0x10) == 0) {
+            //        logger.Log("\n").LogHex(i).Log(":");
+            //    }
+            //    logger.Log(" ").LogHex(*(reinterpret_cast<unsigned char*>(info.BaseAddress) + i));
+            // }
+            // logger.Log("\n");
         }
     }
 
+#ifdef BUILD_AS_DINPUT8
+    if (gameVersionByCode == GameVersion::English_v1
+        && gameVersionByRData == GameVersion::English_v1) {
+        return GameVersion::English_v1;
+    }
+    if (gameVersionByCode == GameVersion::Japanese_v1
+        && gameVersionByRData == GameVersion::Japanese_v1) {
+        return GameVersion::Japanese_v1;
+    }
+    if (gameVersionByCode == GameVersion::English_v1_encrypted
+        && gameVersionByRData == GameVersion::English_v1) {
+        return GameVersion::English_v1_encrypted;
+    }
+    if (gameVersionByCode == GameVersion::Japanese_v1_encrypted
+        && gameVersionByRData == GameVersion::Japanese_v1) {
+        return GameVersion::Japanese_v1_encrypted;
+    }
+#else
     if (gameVersionByCode == gameVersionByRData
-#ifndef BUILD_AS_DINPUT8
-        && gameVersionByCode == gameVersionByOverwrittenArrayData
-#endif
-    ) {
+        && gameVersionByCode == gameVersionByOverwrittenArrayData) {
         return gameVersionByCode;
     }
+#endif
+
     return GameVersion::Unknown;
 }
 
@@ -936,30 +1007,22 @@ static void* MouseEvidenceRotateSpeedAdjust(GameVersion version, Logger& logger,
 static PDirectInput8Create addr_PDirectInput8Create = 0;
 #endif
 
-static void* SetupHacks() {
-    // Sleep(10000);
-    // 0x1405aaffa
-    // WriteByte(logger, reinterpret_cast<char*>(0x14040643e), 0xeb);
-
-#ifdef BUILD_AS_DINPUT8
-    Logger logger("dgsfix_dinput8.log");
-#else
-    Logger logger("dgsfix_standalone.log");
-#endif
-
-#ifdef BUILD_AS_DINPUT8
-    addr_PDirectInput8Create = LoadForwarderAddress(logger);
-#endif
-
+struct HackInitData {
+    Logger logger;
     void* codeBase = nullptr;
     void* rdataBase = nullptr;
     void* overwrittenArrayBase = nullptr;
-    GameVersion version = FindImageBase(logger, &codeBase, &rdataBase, &overwrittenArrayBase);
+    GameVersion version = GameVersion::Unknown;
+    void* newPage1 = nullptr;
+    void* newPage2 = nullptr;
+};
 
-    if (version == GameVersion::Unknown || !codeBase || !rdataBase) {
-        logger.Log("Failed finding executable in memory -- wrong game or version?\n");
-        return nullptr;
-    }
+static void* SetupHacks(HackInitData* hackInitData) {
+    void* codeBase = hackInitData->codeBase;
+    void* rdataBase = hackInitData->rdataBase;
+    void* overwrittenArrayBase = hackInitData->overwrittenArrayBase;
+    GameVersion version = hackInitData->version;
+    Logger& logger = hackInitData->logger;
 
 #ifndef BUILD_AS_DINPUT8
     if (overwrittenArrayBase) {
@@ -1046,8 +1109,7 @@ static void* SetupHacks() {
         }
     }
 
-    // allocate extra page for code
-    void* new_page = VirtualAlloc(nullptr, 0x1000, MEM_COMMIT, PAGE_READWRITE);
+    void* new_page = hackInitData->newPage1;
     if (!new_page) {
         logger.Log("VirtualAlloc failed, skipping remaining patches.\n");
         return nullptr;
@@ -1123,7 +1185,252 @@ static void* SetupHacks() {
 
     return new_page;
 }
-static void* dummy = SetupHacks();
+
+static HackInitData* InitHacks();
+static HackInitData* dummy = InitHacks();
+
+static void SetupHacksAfterDecrypt() {
+    std::unique_ptr<HackInitData> hd(dummy);
+    if (hd) {
+        dummy = nullptr;
+        void* codeBase = nullptr;
+        void* rdataBase = nullptr;
+        void* overwrittenArrayBase = nullptr;
+        void* steamdrmBase = nullptr;
+        GameVersion version =
+            FindImageBase(hd->logger, &codeBase, &rdataBase, &overwrittenArrayBase, &steamdrmBase);
+
+        hd->codeBase = codeBase;
+        hd->rdataBase = rdataBase;
+        hd->overwrittenArrayBase = overwrittenArrayBase;
+        hd->version = version;
+        SetupHacks(hd.get());
+    }
+}
+
+static void InterceptDecryption(HackInitData* hd) {
+    // extremely ugly... we're basically racing against the decryption thread and hope the timing
+    // works out
+
+    // spinloop here for a while and wait for the entry point to be decrypted
+    volatile char* refpt =
+        reinterpret_cast<char*>(hd->codeBase)
+        + (hd->version == GameVersion::English_v1_encrypted ? 0x91283f : 0x91319f);
+    while (*refpt != (char)0x84) {
+        ;
+    }
+
+    // entry point decrypted, inject a call to our function
+    char* jumptarget = reinterpret_cast<char*>(hd->newPage2);
+    char* injectval = reinterpret_cast<char*>(hd->codeBase)
+                      + (hd->version == GameVersion::English_v1_encrypted ? 0x912828 : 0x913188);
+    char* writeptr = injectval;
+    // mov rcx,jumptarget
+    *writeptr++ = 0x48;
+    *writeptr++ = 0xb9;
+    memcpy(writeptr, &jumptarget, 8);
+    writeptr += 8;
+    // jmp rcx
+    *writeptr++ = 0xff;
+    *writeptr++ = 0xe1;
+
+    *writeptr++ = 0xcc;
+    *writeptr++ = 0xcc;
+    *writeptr++ = 0xcc;
+
+    FlushInstructionCache(GetCurrentProcess(), injectval, 0xf);
+}
+
+static HackInitData* InitHacks() {
+    // Sleep(10000);
+    // 0x1405aaffa
+    // WriteByte(logger, reinterpret_cast<char*>(0x14040643e), 0xeb);
+
+#ifdef BUILD_AS_DINPUT8
+    Logger logger("dgsfix_dinput8.log");
+#else
+    Logger logger("dgsfix_standalone.log");
+#endif
+
+#ifdef BUILD_AS_DINPUT8
+    addr_PDirectInput8Create = LoadForwarderAddress(logger);
+#endif
+
+    void* codeBase = nullptr;
+    void* rdataBase = nullptr;
+    void* overwrittenArrayBase = nullptr;
+    void* steamdrmBase = nullptr;
+    GameVersion version =
+        FindImageBase(logger, &codeBase, &rdataBase, &overwrittenArrayBase, &steamdrmBase);
+
+    if (version == GameVersion::Unknown || !codeBase || !rdataBase) {
+        logger.Log("Failed finding executable in memory -- wrong game or version?\n");
+        return nullptr;
+    }
+
+    // allocate extra pages for code
+    void* new_page_1 = VirtualAlloc(nullptr, 0x1000, MEM_COMMIT, PAGE_READWRITE);
+
+    std::unique_ptr<HackInitData> hd = std::make_unique<HackInitData>();
+    hd->codeBase = codeBase;
+    hd->rdataBase = rdataBase;
+    hd->overwrittenArrayBase = overwrittenArrayBase;
+    hd->version = version;
+    hd->logger = std::move(logger);
+    hd->newPage1 = new_page_1;
+    hd->newPage2 = nullptr;
+
+    if (version == GameVersion::English_v1 || version == GameVersion::Japanese_v1) {
+        hd->logger.Log("Patching v1.\n");
+        SetupHacks(hd.get());
+        return nullptr;
+    }
+
+    if (version == GameVersion::English_v1_encrypted
+        || version == GameVersion::Japanese_v1_encrypted) {
+        // if (steamdrmBase == nullptr) {
+        //     hd->logger.Log("Didn't find DRM decryption code, cannot patch encrypted binary.\n");
+        //     return nullptr;
+        // }
+
+        void* new_page_2 = VirtualAlloc(nullptr, 0x1000, MEM_COMMIT, PAGE_READWRITE);
+        hd->newPage2 = new_page_2;
+        if (hd->newPage2 == nullptr) {
+            hd->logger.Log("VirtualAlloc failed, cannot patch encrypted binary.\n");
+            return nullptr;
+        }
+        hd->logger.Log("Delaying patch of encrypted code until after decryption.\n");
+
+        // we need to hook ourselves after the game is decrypted, but before execution jumps to it
+        char* writeptr = reinterpret_cast<char*>(hd->newPage2);
+
+        // prepare injection code...
+
+        // mov qword ptr[rsp+8],rbx
+        *writeptr++ = 0x48;
+        *writeptr++ = 0x89;
+        *writeptr++ = 0x5c;
+        *writeptr++ = 0x24;
+        *writeptr++ = 0x08;
+        // push rdi
+        *writeptr++ = 0x57;
+        // sub rsp,0x30
+        *writeptr++ = 0x48;
+        *writeptr++ = 0x83;
+        *writeptr++ = 0xec;
+        *writeptr++ = 0x30;
+
+        // mov rcx,SetupHacksAfterDecrypt
+        void* setuphacks = SetupHacksAfterDecrypt;
+        *writeptr++ = 0x48;
+        *writeptr++ = 0xb9;
+        memcpy(writeptr, &setuphacks, 8);
+        writeptr += 8;
+        // call rcx
+        *writeptr++ = 0xff;
+        *writeptr++ = 0xd1;
+
+        // mov ecx,1
+        *writeptr++ = 0xb9;
+        *writeptr++ = 0x01;
+        *writeptr++ = 0x00;
+        *writeptr++ = 0x00;
+        *writeptr++ = 0x00;
+
+        // jump back to original code
+        // mov rax,codeback
+        char* codeback = reinterpret_cast<char*>(hd->codeBase)
+                         + (version == GameVersion::English_v1_encrypted ? 0x912837 : 0x913197);
+        *writeptr++ = 0x48;
+        *writeptr++ = 0xb8;
+        memcpy(writeptr, &codeback, 8);
+        writeptr += 8;
+        // jmp rax
+        *writeptr++ = 0xff;
+        *writeptr++ = 0xe0;
+
+        // mark as executable
+        {
+            DWORD tmpdword;
+            VirtualProtect(hd->newPage2, 0x1000, PAGE_EXECUTE_READ, &tmpdword);
+            FlushInstructionCache(GetCurrentProcess(), hd->newPage2, 0x1000);
+        }
+
+        std::thread decryptIntercept(InterceptDecryption, hd.get());
+        decryptIntercept.detach();
+
+        return hd.release();
+
+        // stuff below doesn't work, steam drm apparently verifies its own code...
+
+        // char* steamdrm = reinterpret_cast<char*>(steamdrmBase);
+
+        // PageUnprotect unprotect(hd->logger, steamdrm + 0x396e, 0x2);
+        // writeptr = steamdrm + 0x396e;
+        // *writeptr++ = 0x31;
+
+        /*
+        PageUnprotect unprotect(hd->logger, steamdrm + 0x3949, 0x10);
+
+        char* jumptarget = writeptr;
+
+        // call the function that patches the game
+        // mov rcx,SetupHacksAfterDecrypt
+        void* setuphacks = SetupHacksAfterDecrypt;
+        *writeptr++ = 0x48;
+        *writeptr++ = 0xb9;
+        memcpy(writeptr, &setuphacks, 8);
+        writeptr += 8;
+        // call rcx
+        *writeptr++ = 0xff;
+        *writeptr++ = 0xd1;
+
+        // copy instructions we're gonna overwrite
+        memcpy(writeptr, steamdrm + 0x3949, 0x10);
+        writeptr += 0x10;
+
+        // jump back to original code
+        // mov rcx,codeback
+        char* codeback = steamdrm + 0x3949 + 0x10;
+        *writeptr++ = 0x48;
+        *writeptr++ = 0xb9;
+        memcpy(writeptr, &codeback, 8);
+        writeptr += 8;
+        // jmp rcx
+        *writeptr++ = 0xff;
+        *writeptr++ = 0xe1;
+
+        hd->writeptr = Align16CodePage(hd->logger, writeptr);
+
+        // jump to our construct here at original code location
+        // mov rcx,jumptarget
+        writeptr = steamdrm + 0x3949;
+        *writeptr++ = 0x48;
+        *writeptr++ = 0xb9;
+        memcpy(writeptr, &jumptarget, 8);
+        writeptr += 8;
+        // jmp rcx
+        *writeptr++ = 0xff;
+        *writeptr++ = 0xe1;
+
+        // fill up half leftover instruction with interrupt
+        *writeptr++ = 0xcc;
+        *writeptr++ = 0xcc;
+        *writeptr++ = 0xcc;
+        *writeptr++ = 0xcc;
+
+        // mark newly allocated page as executable
+        {
+            DWORD tmpdword;
+            VirtualProtect(new_page, 0x1000, PAGE_EXECUTE_READ, &tmpdword);
+            FlushInstructionCache(GetCurrentProcess(), new_page, 0x1000);
+        }
+        */
+    }
+
+    hd->logger.Log("Invalid version enum?\n");
+    return nullptr;
+}
 
 #ifdef BUILD_AS_DINPUT8
 extern "C" {
