@@ -259,8 +259,7 @@ static GameVersion FindImageBase(Logger& logger, void** code, void** rdata,
                     logger.Log("Appears to be the WW code. (2023-07-10 patch, encrypted)\n");
                     *code = info.BaseAddress;
                     gameVersionByCode = GameVersion::English_v1_encrypted;
-                } else if (info.RegionSize == 0x954000
-                           && crc == 0xa9b1dc0f) { // this is a guess, might be different...
+                } else if (info.RegionSize == 0x954000 && crc == 0x1a34f88) {
                     logger.Log("Appears to be the JP code. (2023-07-10 patch, encrypted)\n");
                     *code = info.BaseAddress;
                     gameVersionByCode = GameVersion::Japanese_v1_encrypted;
