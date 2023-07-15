@@ -15,7 +15,7 @@ All options are can be enabled/disabled or configured in dgs.ini.
 
 NOTE: The game expects to always run at the configured target framerate. If you're running this on a very low performance CPU or GPU and cannot consistently reach 60 FPS, you should change the FPS setting in the config file to the stock 30 for a better experience.
 
-Compatible with the initial release version on Steam, both the build with Japanese text support and the build without, as well as the update from 2023-07-11. Will likely stop working if another update happens.
+Compatible with the initial release version on Steam, both the build with Japanese text support and the build without, as well as the update from 2023-07-10. Will likely stop working if another update happens.
 
 Usage Instructions
 ==================
